@@ -1,7 +1,7 @@
 isONclust
 ========
 
-isONclust is a tool for clustering either PacBio Iso-Seq reads, or Oxford Nanopore reads into clusters, where each cluster represents all reads that came from a gene. Detailed information is available in [preprint](link).  
+isONclust is a tool for clustering either PacBio Iso-Seq reads, or Oxford Nanopore reads into clusters, where each cluster represents all reads that came from a gene. Detailed information is available in [preprint](https://www.biorxiv.org/content/early/2018/11/06/463463).  
 
 
 isONclust is distributed as a python package supported on Linux / OSX with python v>=2.7, and 3.4-3.6, 3.5-dev and 3.6-dev [![Build Status](https://travis-ci.org/ksahlin/isONclust.svg?branch=master)](https://travis-ci.org/ksahlin/isONclust)
@@ -173,7 +173,7 @@ CREDITS
 
 Please cite [1] when using IsoCon.
 
-1. Kristoffer Sahlin Paul Medvedev (2018) "De novo clustering of long-read transcriptome data using a greedy, quality-value based algorithm", bioRxiv [Link]().
+1. Kristoffer Sahlin, Paul Medvedev (2018) "De novo clustering of long-read transcriptome data using a greedy, quality-value based algorithm", bioRxiv [Link](https://www.biorxiv.org/content/early/2018/11/06/463463).
 
 LICENCE
 ----------------
