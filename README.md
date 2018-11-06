@@ -29,21 +29,40 @@ INSTALLATION
 ----------------
 
 ### Using conda
+Conda is the preferred way to install isONclust.
 
-Coming soon.
+1. Create and activate a new environment called isonclust
+
+```
+conda create -n isonclust python=3 pip 
+source activate isonclust
+```
+
+2. Install packages that are not (currently) available in any channels 
+
+```
+pip install pysam
+pip install parasail
+pip install isONclust
+```
+3. You should now have 'isONclust' installed; try it:
+```
+isONclust --help
+```
+
+Upon start/login to your server/computer you need to activate the conda environment "isonclust" to run isONclust as:
+```
+source activate isonclust
+```
 
 ### Using pip 
 
-`pip` is pythons official package installer. This section assumes you have `python` (v2.7 or >=3.4) and a recent version of `pip` installed which should be included in most python versions. If you do not have `pip`, it can be easily installed [from here](https://pip.pypa.io/en/stable/installing/) and upgraded with `pip install --upgrade pip`. 
-
-With `python` and `pip` available, create a file `requirements.txt` with contents copied from [this file](https://github.com/ksahlin/isONclust/blob/master/requirements.txt). Then, type in terminal 
-
+To install isONclust, run:
 ```
-pip install --requirement requirements.txt isONclust
+pip install  isONclust
 ```
+`pip` will install the dependencies automatically for you. `pip` is pythons official package installer and is included in most python versions. If you do not have `pip`, it can be easily installed [from here](https://pip.pypa.io/en/stable/installing/) and upgraded with `pip install --upgrade pip`. 
 
-
-`pip` will install the dependencies automatically for you. IsoCon has been built with python 2.7, 3.4-3.6 on Linux systems using [Travis](https://travis-ci.org/). For customized installation of latest master branch, see below.
 
 ### Downloading source from GitHub
 
@@ -67,7 +86,7 @@ cd isONclust
 You can verify successul installation by running isONclust on this [small dataset](https://github.com/ksahlin/isONclust/tree/master/test/sample_alz_2k.fastq). Simply download the test dataset and run:
 
 ```
-isONclust pipeline --fastq [test/sample_alz_2k.fastq] --outfolder [output path]
+isONclust --fastq [test/sample_alz_2k.fastq] --outfolder [output path]
 ```
 
 
