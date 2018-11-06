@@ -38,11 +38,9 @@ conda create -n isonclust python=3 pip
 source activate isonclust
 ```
 
-2. Install packages that are not (currently) available in any channels 
+2. Install isONclust 
 
 ```
-pip install pysam
-pip install parasail
 pip install isONclust
 ```
 3. You should now have 'isONclust' installed; try it:
