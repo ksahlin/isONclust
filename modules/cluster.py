@@ -670,15 +670,14 @@ def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, ar
     print("Total number of reads iterated through:{0}".format(i+1))
 
     print("Passed mapping criteria:{0}".format(mapped_passed_criteria))
-    print("Passed alignment criteria:{0}".format(aln_passed_criteria))
-    print("Total calls to alignment mudule:{0}".format(aln_called))
+    print("Passed alignment criteria in this process:{0}".format(aln_passed_criteria))
+    print("Total calls to alignment mudule in this process:{0}".format(aln_called))
 
     print("Percent passed mapping criteria:{0}".format( round(100*mapped_passed_criteria/float(i+1), 2) ))
     print("Percent passed alignment criteria total:{0}".format( round(100*aln_passed_criteria/float(i+1), 2) ))    
-    print("Percent passed alignment criteria out of number of calls to this module:{0}".format( round(100*aln_passed_criteria/float(aln_called), 2) )) 
+    if aln_called > 0:
+        print("Percent passed alignment criteria out of number of calls to the alignment module:{0}".format(round(100*aln_passed_criteria/float(aln_called), 2) )) 
 
-    print("total alingments called in core:", aln_called)
-    print("total alingments passed:", aln_passed_criteria)
     return Cluster, cluster_seq_origin
 
 
