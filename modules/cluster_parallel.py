@@ -18,7 +18,7 @@ import multiprocessing as mp
 import errno
 from time import time
 import re
-
+import copy
 
 try:
     import parasail
@@ -304,7 +304,7 @@ def get_best_cluster_block_align(read_cl_id, cluster_seq_origin, hit_clusters_id
     return  best_cluster_id, 0,  -1, -1, -1, alignment_ratio
 
 
-def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, args):
+def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, minimizer_database = {}, args):
     """
         Iterates throughreads in sorted order (w.r.t. score) and:
             1. homopolymenr compresses the read
@@ -313,10 +313,12 @@ def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, ar
             4. Finds the best of the hits using mapping approach
             5. If no hit is found in 4. tries to align to representative with th most shared minimizers.
             6. Adds current read to representative, or makes it a new representative of a new cluster.
-                6''. If new representative, and add the minimizers to the miniizer database H. 
+                6''. If new representative, and add the minimizers to the miniizer database. 
     """
-    H = {}
     print("USING w:{0}, k:{1}".format(args.w, args.k))
+    init_clusters = copy.deepcopy(Cluster)
+    init_cluster_seq_origin = copy.deepcopy(cluster_seq_origin)
+
     phred_char_to_p = {chr(i) : min( 10**( - (ord(chr(i)) - 33)/10.0 ), 0.5)  for i in range(128)} # PHRED encoded quality character to prob of error. Need this locally if multiprocessing
     cluster_to_new_cluster_id = {}
     ## logging counters 
@@ -336,28 +338,26 @@ def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, ar
                 inv_map.setdefault(v, set()).add(k)
             cl_tmp = sorted( [ 1 + sum([len(Cluster[cl_id]) for cl_id in c ]) for c in inv_map.values() ], reverse= True)
             cl_tmp_nontrivial = [cl_size_tmp for cl_size_tmp in cl_tmp if cl_size_tmp > 1]
-            print("Processing read", i, "seq length:", len(seq), "nr non-trivial clusters:", len(cl_tmp_nontrivial), "kmers stored:", len(H))
+            print("Processing read", i, "seq length:", len(seq), "nr non-trivial clusters:", len(cl_tmp_nontrivial), "kmers stored:", len(minimizer_database))
             print("clust distr:", [c_len for c_len in cl_tmp if c_len > 100] )
-            depth = [len(nr_cl) for kmer, nr_cl in  sorted(H.items(), key=lambda x: len(x[1]), reverse= True)[:50]]
-            print("Depth of H:", sum(depth)/float(len(depth)), depth)
+            depth = [len(nr_cl) for kmer, nr_cl in  sorted(minimizer_database.items(), key=lambda x: len(x[1]), reverse= True)[:50]]
+            print("Depth of minimizer_database:", sum(depth)/float(len(depth)), depth)
         ################################################################################
         ################################################################################
 
         # homopolymenr compress read
         seq_hpol_comp = ''.join(ch for ch, _ in itertools.groupby(seq))
-        
-        if len(cluster_seq_origin[read_cl_id]) == 6: # we have already computed homopolymenr compressed error rate in previous iteration (if qtclust is called with multiple cores):
-            pass
-        else:
-            indices = [i for i, (n1,n2) in enumerate(zip(seq[:-1],seq[1:])) if n1 != n2] # indicies we want to take quality values from to get quality string of homopolymer compressed read 
-            indices.append(len(seq) - 1)
-            qualcomp = ''.join([qual[i] for i in indices])
-            assert len(seq_hpol_comp) == len(qualcomp)
+        assert read_cl_id not in cluster_seq_origin
 
-            # compute the average error rate after compression
-            poisson_mean = sum([ qualcomp.count(char_) * phred_char_to_p[char_] for char_ in set(qualcomp)])
-            h_pol_compr_error_rate = poisson_mean/float(len(qualcomp))
-            cluster_seq_origin[read_cl_id] = (read_cl_id, acc, seq, qual, score, h_pol_compr_error_rate) # adding homopolymenr compressed error rate to info tuple of cluster origin sequence
+        indices = [i for i, (n1,n2) in enumerate(zip(seq[:-1],seq[1:])) if n1 != n2] # indicies we want to take quality values from to get quality string of homopolymer compressed read 
+        indices.append(len(seq) - 1)
+        qualcomp = ''.join([qual[i] for i in indices])
+        assert len(seq_hpol_comp) == len(qualcomp)
+
+        # compute the average error rate after compression
+        poisson_mean = sum([ qualcomp.count(char_) * phred_char_to_p[char_] for char_ in set(qualcomp)])
+        h_pol_compr_error_rate = poisson_mean/float(len(qualcomp))
+        cluster_seq_origin[read_cl_id] = (read_cl_id, acc, seq, qual, score, h_pol_compr_error_rate) # adding homopolymenr compressed error rate to info tuple of cluster origin sequence
         
         # get minimizers
         if len(seq_hpol_comp) < args.k:
@@ -366,7 +366,7 @@ def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, ar
 
 
         minimizers = get_kmer_minimizers(seq_hpol_comp, args.k, args.w)
-        hit_clusters_ids, hit_clusters_hit_index, hit_clusters_hit_positions = get_all_hits_new(minimizers, H, Cluster, read_cl_id)
+        hit_clusters_ids, hit_clusters_hit_index, hit_clusters_hit_positions = get_all_hits_new(minimizers, minimizer_database, Cluster, read_cl_id)
         best_cluster_id_m, nr_shared_kmers_m, mapped_ratio = get_best_cluster(read_cl_id, len(seq_hpol_comp), hit_clusters_ids, hit_clusters_hit_positions, minimizers, len(minimizers), hit_clusters_hit_index, cluster_seq_origin, p_emp_probs, args)
         
         if best_cluster_id_m >= 0:
@@ -389,17 +389,16 @@ def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, ar
 
         else :  # Stays in current cluser, adding representative minimixers
             for m, pos in minimizers:
-                if m in H:
-                    H[m].add(read_cl_id)
+                if m in minimizer_database:
+                    minimizer_database[m].add(read_cl_id)
                 else:
-                    H[m] = set()
-                    H[m].add(read_cl_id)     
+                    minimizer_database[m] = set()
+                    minimizer_database[m].add(read_cl_id)     
 
     
     # new no graph approach ####
     for read_cl_id in cluster_to_new_cluster_id:
         new_cl_id = cluster_to_new_cluster_id[read_cl_id]
-        # (r_cl_id, acc, seq, qual, score, error_rate) = cluster_seq_origin[read_cl_id]
         # add all read acc to new origin
         all_reads = Cluster[read_cl_id]
         for read_acc in all_reads:
@@ -422,7 +421,11 @@ def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, ar
     if aln_called > 0:
         print("Percent passed alignment criteria out of number of calls to the alignment module:{0}".format(round(100*aln_passed_criteria/float(aln_called), 2) )) 
 
-    return Cluster, cluster_seq_origin
+    new_cluster_seq_origins = {k,v for cluster_seq_origin.items() if k not in init_cluster_seq_origin}
+    new_clusters = {k,v for Cluster.items() if k not in init_clusters}
+    assert len(new_clusters) == len(new_cluster_seq_origins)
+
+    return new_clusters, new_cluster_seq_origins, minimizer_database
 
 
 def p_shared_minimizer_empirical(error_rate_read, error_rate_center, p_emp_probs):
@@ -451,15 +454,87 @@ def merge_two_dicts(x, y):
     z.update(y)    # modifies z with y's keys and values & returns None
     return z
 
-def next_power_of_2(x):  
-    return 1 if x == 0 else 2**(x - 1).bit_length()
+def merge_dicts(*dict_args):
+    """
+    Given any number of dicts, shallow copy and merge into a new dict,
+    precedence goes to key value pairs in latter dicts.
+    """
+    result = {}
+    for dictionary in dict_args:
+        result.update(dictionary)
+    return result
+
+def batch(lst, n=1):
+    l = len(lst)
+    for ndx in range(0, l, n):
+        yield lst[ndx:min(ndx + n, l)]
+
+
+def parallelize(function, data_chunked, nr_cores):
+    pool = Pool(processes=nr_cores-1)
+    try:
+        res = pool.map_async(function, data_chunked )
+        results = res.get(999999999) # Without the timeout this blocking call ignores all signals.
+    except KeyboardInterrupt:
+        print("Caught KeyboardInterrupt, terminating workers")
+        pool.terminate()
+        sys.exit()
+    else:
+        # print("Normal termination")
+        pool.close()
+    pool.join()
+    return results
 
 
 def cluster_seqs(read_array, p_emp_probs, args):
     # split sorted reads into batches
-    num_batches = next_power_of_2(args.nr_cores)
-    print("Using {0} batches.".format(num_batches))
-    read_batches = [read_array[i:len(read_array):num_batches] for i in range(num_batches)]
+    print("Using {0} batches.".format(args.nr_cores))
+
+    # process the first batch single core
+    top_read_batch = read_array[0:10000] # TODO: make 10k a parameter with default = 100,000 
+    # top_clust, top_clust_origins = {}, {}
+    # for i, acc, seq, qual, score in top_read_batch:
+    #     top_clust[i] = [acc]
+    #     top_clust_origins[i] = (i, acc, seq, qual, score)
+    top_new_clusters, top_new_seq_origins, minimizer_database = reads_to_clusters({}, {}, top_read_batch, p_emp_probs, minimizer_database = {}, args)
+
+    # Parallelize over args.nr_cores cores
+    chunk_size = (len(read_array) - 10000 )/ (args.nr_cores - 1)
+    print(chunk_size)
+    cluster_batches = []
+    cluster_seq_origin_batches = []
+    for sublist in batch(read_array[10000:], chunk_size):
+        tmp_clust = {}
+        tmp_clust_origin = {}
+        for i, acc, seq, qual, score in sublist:
+            tmp_clust[i] = [acc]
+            tmp_clust_origin[i] = (i, acc, seq, qual, score)
+        cluster_batches.append(tmp_clust)
+        cluster_seq_origin_batches.append(tmp_clust_origin)
+
+    results = parallelize(reads_to_clusters, [((top_clusters, top_new_seq_origins, read_batches[i], p_emp_probs, minimizer_database, args), {}) for i in range(len(cluster_batches))], args.nr_cores)
+    all_cl, all_repr, all_minimizer_databases = [top_new_clusters],[top_new_seq_origins], [minimizer_database]
+    for new_clusters, new_cluster_origins, min_db in results: 
+        all_cl.append(new_clusters)
+        all_repr.append(new_cluster_origins)
+        all_minimizer_databases.append(min_db)
+
+    all_representatives = merge_dicts(*all_repr)
+    all_clusters = merge_dicts(*all_cl)
+    combined_minimizer_db = continue_here,....
+    print("Total number of created origins in parallel:", all_origins)
+
+
+    # Process all representiatives single core to create final set of representatives
+
+
+    # Parallelize assignemt of reads to representatives
+
+
+
+    ## OLD CODE
+
+    read_batches = [read_array[i:len(read_array):args.nr_cores] for i in range(args.nr_cores)]
     
     cluster_batches = []
     cluster_seq_origin_batches = []
@@ -472,7 +547,6 @@ def cluster_seqs(read_array, p_emp_probs, args):
         cluster_batches.append(tmp_clust)
         cluster_seq_origin_batches.append(tmp_clust_origin)
 
-    # H_batches = [{} for i in range(num_batches) ]
     del read_array
 
     # do clustering
@@ -483,9 +557,9 @@ def cluster_seqs(read_array, p_emp_probs, args):
     signal.signal(signal.SIGINT, original_sigint_handler)
     it = 1
     while True:
-        pool = Pool(processes=int(num_batches/it))
+        pool = Pool(processes=int(args.nr_cores/it))
         print("Iteration:", it)
-        if num_batches == 1:
+        if args.nr_cores == 1:
             # print([len(cluster_batches[0][i]) for i in cluster_batches[0].keys()])
             Cluster, cluster_seq_origin = reads_to_clusters(cluster_batches[0], cluster_seq_origin_batches[0], read_batches[0], p_emp_probs, args)
             # print([len(Cluster[cl]) for cl in Cluster])
@@ -538,25 +612,6 @@ def cluster_seqs(read_array, p_emp_probs, args):
         it += 1
 
     return Cluster, cluster_seq_origin
-
-
-
-# def main(sorted_reads_fastq_file, args):
-#     read_array = [ (i, acc, seq, qual, float(acc.split("_")[-1])) for i, (acc, (seq, qual)) in enumerate(readfq(open(sorted_reads_fastq_file, 'r')))]
-
-#     clusters = cluster_seqs(read_array, args)
-
-#     outfile = open(os.path.join(args.outfolder,  "pre_clusters.csv"), "w")
-#     reads = {acc: (seq,qual) for (acc, (seq, qual)) in  readfq(open(sorted_reads, 'r'))}
-#     output_index = 1
-#     # nonclustered_outfile = open(os.path.join(reads_outfolder, "non_clustered.fa"), "w")
-#     for c_id, all_read_acc in sorted(clusters.items(), key = lambda x: len(x[1]), reverse=True):
-#         for r_acc in all_read_acc:
-#             outfile.write("{0}\t{1}\n".format(c_id,r_acc))
-#         if len(all_read_acc) > 1:
-#             output_index += 1
-
-#     print("Nr clusters larger than 1:", output_index) #, "Non-clustered reads:", len(archived_reads))
 
 
 
