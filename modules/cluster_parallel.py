@@ -304,7 +304,7 @@ def get_best_cluster_block_align(read_cl_id, cluster_seq_origin, hit_clusters_id
     return  best_cluster_id, 0,  -1, -1, -1, alignment_ratio
 
 
-def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, args, minimizer_database = {}):
+def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, args, minimizer_database = {}, task = "clustering", new_cluster_allowed = True):
     """
         Iterates throughreads in sorted order (w.r.t. score) and:
             1. homopolymenr compresses the read
@@ -316,8 +316,11 @@ def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, ar
                 6''. If new representative, and add the minimizers to the miniizer database. 
     """
     print("USING w:{0}, k:{1}".format(args.w, args.k))
-    init_clusters = copy.deepcopy(Cluster)
-    init_cluster_seq_origin = copy.deepcopy(cluster_seq_origin)
+
+
+    if task  == "clustering":
+        init_clusters = copy.deepcopy(Cluster)
+        init_cluster_seq_origin = copy.deepcopy(cluster_seq_origin)
 
     phred_char_to_p = {chr(i) : min( 10**( - (ord(chr(i)) - 33)/10.0 ), 0.5)  for i in range(128)} # PHRED encoded quality character to prob of error. Need this locally if multiprocessing
     cluster_to_new_cluster_id = {}
@@ -344,6 +347,13 @@ def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, ar
             print("Depth of minimizer_database:", sum(depth)/float(len(depth)), depth)
         ################################################################################
         ################################################################################
+
+        if task  == "read_assignment":
+            if read_cl_id in cluster_seq_origin: # last step read assignment
+                # print("HERE")
+                Cluster[read_cl_id].append(acc)
+                continue
+
 
         # homopolymenr compress read
         seq_hpol_comp = ''.join(ch for ch, _ in itertools.groupby(seq))
@@ -383,13 +393,19 @@ def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, ar
 
 
         best_cluster_id = max(best_cluster_id_m,best_cluster_id_a)
+        if read_cl_id == 5432:
+            print(5432, best_cluster_id, acc, best_cluster_id_a, nr_shared_kmers_a, best_cluster_id_m)
         
         if best_cluster_id >= 0:
             # cluster_to_new_cluster_id[read_cl_id] = best_cluster_id
             Cluster[best_cluster_id].append(acc) 
             del cluster_seq_origin[read_cl_id]
 
-        else :  # New cluster, adding representative minimixers
+        elif new_cluster_allowed:  # New cluster, adding representative minimixers
+            # if task == "read_assignment":
+            #     print("THIS SHOULD NOT HAPPEN")
+            #     print(acc, seq)
+                # sys.exit()
             Cluster[read_cl_id] = [acc]
             for m, pos in minimizers:
                 if m in minimizer_database:
@@ -412,23 +428,30 @@ def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, ar
     ##########################
 
 
-    print("PASS")
-    print("Total number of reads iterated through:{0}".format(i+1))
+    # print("PASS")
+    # print("Total number of reads iterated through:{0}".format(i+1))
 
-    print("Passed mapping criteria:{0}".format(mapped_passed_criteria))
-    print("Passed alignment criteria in this process:{0}".format(aln_passed_criteria))
-    print("Total calls to alignment mudule in this process:{0}".format(aln_called))
+    # print("Passed mapping criteria:{0}".format(mapped_passed_criteria))
+    # print("Passed alignment criteria in this process:{0}".format(aln_passed_criteria))
+    # print("Total calls to alignment mudule in this process:{0}".format(aln_called))
 
-    print("Percent passed mapping criteria:{0}".format( round(100*mapped_passed_criteria/float(i+1), 2) ))
-    print("Percent passed alignment criteria total:{0}".format( round(100*aln_passed_criteria/float(i+1), 2) ))    
-    if aln_called > 0:
-        print("Percent passed alignment criteria out of number of calls to the alignment module:{0}".format(round(100*aln_passed_criteria/float(aln_called), 2) )) 
+    # print("Percent passed mapping criteria:{0}".format( round(100*mapped_passed_criteria/float(i+1), 2) ))
+    # print("Percent passed alignment criteria total:{0}".format( round(100*aln_passed_criteria/float(i+1), 2) ))    
+    # if aln_called > 0:
+    #     print("Percent passed alignment criteria out of number of calls to the alignment module:{0}".format(round(100*aln_passed_criteria/float(aln_called), 2) )) 
 
-    new_cluster_seq_origins = {k : v for k, v in cluster_seq_origin.items() if k not in init_cluster_seq_origin}
-    new_clusters = {k : v for k,v in Cluster.items() if k not in init_clusters}
-    assert len(new_clusters) == len(new_cluster_seq_origins)
+    if task  == "read_assignment":
+        return Cluster, cluster_seq_origin, minimizer_database
 
-    return new_clusters, new_cluster_seq_origins, minimizer_database
+    else:
+        new_cluster_seq_origins = {k : v for k, v in cluster_seq_origin.items() if k not in init_cluster_seq_origin}
+        new_clusters = {k : v for k,v in Cluster.items() if k not in init_clusters}
+        if new_cluster_allowed:
+            assert len(new_clusters) == len(new_cluster_seq_origins)
+        else:
+            assert len(new_clusters) == 0
+
+        return new_clusters, new_cluster_seq_origins, minimizer_database
 
 
 def p_shared_minimizer_empirical(error_rate_read, error_rate_center, p_emp_probs):
@@ -492,23 +515,26 @@ def parallelize(function, data_chunked, nr_cores):
 def cluster_seqs(read_array, p_emp_probs, args):
     all_start = time()
     # split sorted reads into batches
-    print("Using {0} batches.".format(args.nr_cores))
+    print("Using {0} batches (#cores - 1).".format(args.nr_cores -1))
 
     # process the first batch single core
-    top_read_batch = read_array[0:10000] # TODO: make 10k a parameter with default = 100,000 
-    # top_clust, top_clust_origins = {}, {}
-    # for i, acc, seq, qual, score in top_read_batch:
-    #     top_clust[i] = [acc]
-    #     top_clust_origins[i] = (i, acc, seq, qual, score)
-    top_new_clusters, top_new_seq_origins, top_minimizer_database = reads_to_clusters({}, {}, top_read_batch, p_emp_probs, args, minimizer_database = {})
-
+    
+    # top_read_batch = read_array[0:10000] # TODO: make 10k a parameter with default = 100,000 
+    # top_new_clusters, top_new_seq_origins, top_minimizer_database = reads_to_clusters({}, {}, top_read_batch, p_emp_probs, args, minimizer_database = {})
+    
     # Parallelize over args.nr_cores cores
-    chunk_size = int((len(read_array) - 10000 )/ (args.nr_cores - 1)) + 1
+    chunk_size = int((len(read_array) )/ (args.nr_cores - 1)) + 1
     print("Chunk sizes:", chunk_size)
-    print("Number of reference clusters:", len(top_new_clusters))
+    # print("Number of reference clusters:", len(top_new_clusters))
     # cluster_batches = []
     # cluster_seq_origin_batches = []
-    read_batches = [batch for batch in batch(read_array[10000:], chunk_size)]
+    read_batches = [batch for batch in batch(read_array, chunk_size)]
+
+    # print( [info for info in read_array if "m141129_125831_42161_c100698142550000001823143403261592_s1_p0/27236/30_955_CCS_strand=+;fiveseen=1;polyAseen=1;threeseen=1;fiveend=30;polyAend=955;threeend=981;primer=1;chimera=0_900.8398439504809" == info[1] ])
+    # if not read_batches:
+    #     return top_new_clusters, top_new_seq_origins
+
+    # print(read_batches)
     # for sublist in batch(read_array[3000:], chunk_size):
     #     tmp_clust = {}
     #     tmp_clust_origin = {}
@@ -517,31 +543,66 @@ def cluster_seqs(read_array, p_emp_probs, args):
     #         tmp_clust_origin[i] = (i, acc, seq, qual, score)
         # cluster_batches.append(tmp_clust)
         # cluster_seq_origin_batches.append(tmp_clust_origin)
+    # results = parallelize(reads_to_clusters_helper, [((top_new_clusters, top_new_seq_origins, read_batches[i], p_emp_probs, args), {"minimizer_database" : top_minimizer_database}) for i in range(len(read_batches))], args.nr_cores)
 
-    results = parallelize(reads_to_clusters_helper, [((top_new_clusters, top_new_seq_origins, read_batches[i], p_emp_probs, args), {"minimizer_database" : top_minimizer_database}) for i in range(len(read_batches))], args.nr_cores)
+    results = parallelize(reads_to_clusters_helper, [(({}, {}, read_batches[i], p_emp_probs, args), {"minimizer_database" : {}}) for i in range(len(read_batches))], args.nr_cores)
     # all_cl, all_repr, all_minimizer_databases = [top_new_clusters],[top_new_seq_origins], [minimizer_database]
-    all_repr = [top_new_seq_origins]
+    all_repr = [] # all_repr = [top_new_seq_origins]
+    all_cl = []
     for new_clusters, new_cluster_origins, min_db in results: 
-        # all_cl.append(new_clusters)
+        all_cl.append(new_clusters)
         all_repr.append(new_cluster_origins)
-        # all_minimizer_databases.append(min_db)
 
     all_representatives = merge_dicts(*all_repr)
     all_representatives_sorted = sorted(list(all_representatives.values()), key = lambda x: x[4], reverse = True)
     all_representatives_sorted = [ (read_cl_id, acc, seq, qual, score) for (read_cl_id, acc, seq, qual, score, h_pol_compr_error_rate) in  all_representatives_sorted ]     #(read_cl_id, acc, seq, qual, score, h_pol_compr_error_rate)
-    print("Clusters created in parallel:", len(all_representatives_sorted))
+    print("Clusters created in parallel (Iteration 1):", len(all_representatives_sorted))
+
+    # chunk_size = int((len(all_representatives_sorted) )/ (args.nr_cores - 1)) + 1
+    # print("Chunk sizes:", chunk_size)
+    # read_batches_it2 =  [batch for batch in batch(all_representatives_sorted, chunk_size)] 
+    # results = parallelize(reads_to_clusters_helper, [(({}, {}, read_batches_it2[i], p_emp_probs, args), {"minimizer_database" : {}}) for i in range(len(read_batches_it2))], args.nr_cores)
+    # # all_cl, all_repr, all_minimizer_databases = [top_new_clusters],[top_new_seq_origins], [minimizer_database]
+    # all_repr = [] #all_repr = [top_new_seq_origins]
+    # all_cl = []
+    # for new_clusters, new_cluster_origins, min_db in results: 
+    #     all_cl.append(new_clusters)
+    #     all_repr.append(new_cluster_origins)
+
+    # all_representatives = merge_dicts(*all_repr)
+    # all_representatives_sorted = sorted(list(all_representatives.values()), key = lambda x: x[4], reverse = True)
+    # all_representatives_sorted = [ (read_cl_id, acc, seq, qual, score) for (read_cl_id, acc, seq, qual, score, h_pol_compr_error_rate) in  all_representatives_sorted ]     #(read_cl_id, acc, seq, qual, score, h_pol_compr_error_rate)
+    # print("Clusters created in parallel (Iteration 2):", len(all_representatives_sorted))
 
 
-    # Process all representiatives except top ones on a single core to create final set of representatives
+    # TODO: MAYBE REMOVE top_representative before iterating on a single core the second time!
+    # Process all representiatives on a single core to create final set of representatives
 
     all_clusters, all_seq_origins, minimizer_database = reads_to_clusters({}, {}, all_representatives_sorted, p_emp_probs, args, minimizer_database = {})
     print("Final clusters generated new:", len(all_seq_origins))
-
+    assert len(all_clusters) == len(all_seq_origins)
     # Parallelize assignemt of reads to representatives
-    final_clusters = representative_assignment(all_seq_origins_empty_clusters, all_seq_origins, read_array_batches[i], p_emp_probs, args, minimizer_database = minimizer_database)
 
-
+    read_batches = [batch for batch in batch(read_array, chunk_size)]
+    print()
+    print("READ ASSIGNMENT")
+    print()
+    all_clusters = {k: [] for k in all_clusters.keys()} # remove all accessions before read assignment
+    results = parallelize(reads_to_clusters_helper, [((all_clusters, all_seq_origins, read_batches[i], p_emp_probs, args), {"minimizer_database" : minimizer_database, "task" : "read_assignment"}) for i in range(len(read_batches))], args.nr_cores)
+    # final_clusters = representative_assignment(all_seq_origins_empty_clusters, all_seq_origins, read_array_batches[i], p_emp_probs, args, minimizer_database = minimizer_database)
+    # all_cl = [all_clusters] #, [all_seq_origins]
+    final_clusters = {k: [] for k in all_clusters.keys()}
+    print("final cluster length", len(final_clusters))
+    for clusters, cluster_origins, min_db in results: 
+        print("Cluster length", len(clusters))
+        for cl_id in clusters:
+            if cl_id in final_clusters:
+                final_clusters[cl_id].extend(clusters[cl_id]) 
+            else:
+                final_clusters[cl_id] = clusters[cl_id]
+    print("final cluster length last", len(final_clusters))
     print("TOTAL TIME NEW:", time() - all_start)
+    # return final_clusters, all_seq_origins
 
     old_start = time()
     old_clusters, old_seq_origins, top_minimizer_database = reads_to_clusters({}, {}, read_array, p_emp_probs, args, minimizer_database = {})
@@ -634,7 +695,7 @@ def cluster_seqs(read_array, p_emp_probs, args):
     #             cluster_seq_origin_batches.append(cluster_seq_origin)
     #     it += 1
 
-    return Cluster, cluster_seq_origin
+    # return Cluster, cluster_seq_origin
 
 
 

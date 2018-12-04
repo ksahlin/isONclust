@@ -8,7 +8,7 @@ import errno
 from time import time
 
 from modules import get_sorted_fastq_for_cluster
-from modules import cluster_parallel
+from modules import cluster
 from modules import p_minimizers_shared
 
 '''
@@ -83,7 +83,7 @@ def main(args):
     # sys.exit()
     print("started clustring")
     start = time()
-    clusters, cluster_seq_origin = cluster_parallel.cluster_seqs(read_array, p_emp_probs,  args)
+    clusters, cluster_seq_origin = cluster.cluster_seqs(read_array, p_emp_probs,  args)
     print("elapsed time clustering:", time() - start)
 
     # reads = {acc: (seq,qual) for (acc, (seq, qual)) in  readfq(open(sorted_reads_fastq_file, 'r'))}

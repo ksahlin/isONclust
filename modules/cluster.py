@@ -446,20 +446,134 @@ def reads_to_clusters_helper(arguments):
     args, kwargs = arguments
     return reads_to_clusters(*args, **kwargs)
 
+
 def merge_two_dicts(x, y):
     z = x.copy()   # start with x's keys and values
     z.update(y)    # modifies z with y's keys and values & returns None
     return z
 
+
+def merge_dicts(*dict_args):
+    """
+    Given any number of dicts, shallow copy and merge into a new dict,
+    precedence goes to key value pairs in latter dicts.
+    """
+    result = {}
+    for dictionary in dict_args:
+        result.update(dictionary)
+    return result
+
+
 def next_power_of_2(x):  
     return 1 if x == 0 else 2**(x - 1).bit_length()
 
 
+def batch_list(lst, n=1):
+    l = len(lst)
+    for ndx in range(0, l, n):
+        yield lst[ndx:min(ndx + n, l)]
+
+
+# def cluster_seqs(read_array, p_emp_probs, args):
+#     # split sorted reads into batches
+#     num_batches = next_power_of_2(args.nr_cores)
+#     print("Using {0} batches.".format(num_batches))
+#     # read_batches = [read_array[i:len(read_array):num_batches] for i in range(num_batches)]
+
+#     chunk_size = int((len(read_array))/ num_batches) + 1
+#     read_batches = [batch for batch in batch_list(read_array, chunk_size)]
+
+    
+#     cluster_batches = []
+#     cluster_seq_origin_batches = []
+#     for batch in read_batches:
+#         tmp_clust = {}
+#         tmp_clust_origin = {}
+#         for i, acc, seq, qual, score in batch:
+#             tmp_clust[i] = [acc]
+#             tmp_clust_origin[i] = (i, acc, seq, qual, score)
+#         cluster_batches.append(tmp_clust)
+#         cluster_seq_origin_batches.append(tmp_clust_origin)
+
+#     # H_batches = [{} for i in range(num_batches) ]
+#     del read_array
+
+#     # do clustering
+
+#     ####### parallelize alignment #########
+#     # pool = Pool(processes=mp.cpu_count())
+#     original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+#     signal.signal(signal.SIGINT, original_sigint_handler)
+#     it = 1
+#     while True:
+#         pool = Pool(processes=int(num_batches/it))
+#         print("Iteration:", it)
+#         if num_batches == 1:
+#             # print([len(cluster_batches[0][i]) for i in cluster_batches[0].keys()])
+#             Cluster, cluster_seq_origin = reads_to_clusters(cluster_batches[0], cluster_seq_origin_batches[0], read_batches[0], p_emp_probs, args)
+#             # print([len(Cluster[cl]) for cl in Cluster])
+#             assert len(Cluster) == len(cluster_seq_origin)
+#             break
+#         #     sys.exit()
+#         try:
+#             print([len(b) for b in read_batches])
+            
+#             res = pool.map_async(reads_to_clusters_helper, [ ((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, args), {}) for i in range(len(read_batches))] )
+#             cluster_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
+#         except KeyboardInterrupt:
+#             print("Caught KeyboardInterrupt, terminating workers")
+#             pool.terminate()
+#             sys.exit()
+#         else:
+#             # print("Normal termination")
+#             pool.close()
+#         pool.join()
+
+#         read_batches = []
+#         # H_batches = []
+#         cluster_batches = []
+#         cluster_seq_origin_batches = []
+#         if len(list(cluster_results)) == 1 :
+#             Cluster, cluster_seq_origin = cluster_results[0]
+#             break
+#         else:
+#             for i in range(0, len(cluster_results), 2): # merge read_batches, this is easy since by construction, all clusters have unique IDs
+#                 # H = defaultdict(set)
+#                 new_clusters1, cluster_seq_origin1 = cluster_results[i]
+#                 assert len(new_clusters1) == len(cluster_seq_origin1)
+#                 new_clusters2, cluster_seq_origin2 = cluster_results[i+1]
+
+#                 cluster_seq_origin =  merge_two_dicts(cluster_seq_origin1, cluster_seq_origin2)
+#                 Cluster =  merge_two_dicts(new_clusters1, new_clusters2)
+#                 # for k in H1.keys():
+#                 #     H[k].update(H1[k])
+#                 # for k in H2.keys():
+#                 #     H[k].update(H2[k])
+
+#                 read_batches.append( [ (i, acc, seq, qual, score) for i, (i, acc, seq, qual, score, error_rate) in sorted(cluster_seq_origin.items(), key=lambda x: x[1][4], reverse=True)] )
+                
+#                 #### DIFF AFTER BUGFIX1 -- the iteration > 1 bug ####
+#                 # H_batches.append(H)
+#                 # H_batches.append({})
+#                 #####################################################
+#                 cluster_batches.append(Cluster)
+#                 cluster_seq_origin_batches.append(cluster_seq_origin)
+#         it += 1
+
+#     return Cluster, cluster_seq_origin
+
+
+
+
 def cluster_seqs(read_array, p_emp_probs, args):
     # split sorted reads into batches
-    num_batches = next_power_of_2(args.nr_cores)
+    num_batches = args.nr_cores 
     print("Using {0} batches.".format(num_batches))
-    read_batches = [read_array[i:len(read_array):num_batches] for i in range(num_batches)]
+    # read_batches = [read_array[i:len(read_array):num_batches] for i in range(num_batches)]
+
+    chunk_size = int((len(read_array))/ num_batches) + 1
+    read_batches = [batch for batch in batch_list(read_array, chunk_size)]
+
     
     cluster_batches = []
     cluster_seq_origin_batches = []
@@ -476,87 +590,52 @@ def cluster_seqs(read_array, p_emp_probs, args):
     del read_array
 
     # do clustering
-
+    if num_batches == 1:
+        # print([len(cluster_batches[0][i]) for i in cluster_batches[0].keys()])
+        Cluster, cluster_seq_origin = reads_to_clusters(cluster_batches[0], cluster_seq_origin_batches[0], read_batches[0], p_emp_probs, args)
+        # print([len(Cluster[cl]) for cl in Cluster])
+        assert len(Cluster) == len(cluster_seq_origin)
+        return Cluster, cluster_seq_origin
     ####### parallelize alignment #########
     # pool = Pool(processes=mp.cpu_count())
     original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGINT, original_sigint_handler)
-    it = 1
-    while True:
-        pool = Pool(processes=int(num_batches/it))
-        print("Iteration:", it)
-        if num_batches == 1:
-            # print([len(cluster_batches[0][i]) for i in cluster_batches[0].keys()])
-            Cluster, cluster_seq_origin = reads_to_clusters(cluster_batches[0], cluster_seq_origin_batches[0], read_batches[0], p_emp_probs, args)
-            # print([len(Cluster[cl]) for cl in Cluster])
-            assert len(Cluster) == len(cluster_seq_origin)
-            break
-        #     sys.exit()
-        try:
-            print([len(b) for b in read_batches])
-            
-            res = pool.map_async(reads_to_clusters_helper, [ ((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, args), {}) for i in range(len(read_batches))] )
-            cluster_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
-        except KeyboardInterrupt:
-            print("Caught KeyboardInterrupt, terminating workers")
-            pool.terminate()
-            sys.exit()
-        else:
-            # print("Normal termination")
-            pool.close()
-        pool.join()
+    pool = Pool(processes=int(num_batches))
+    try:
+        print([len(b) for b in read_batches])
+        res = pool.map_async(reads_to_clusters_helper, [ ((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, args), {}) for i in range(len(read_batches))] )
+        cluster_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
+    except KeyboardInterrupt:
+        print("Caught KeyboardInterrupt, terminating workers")
+        pool.terminate()
+        sys.exit()
+    else:
+        # print("Normal termination")
+        pool.close()
+    pool.join()
 
-        read_batches = []
-        # H_batches = []
-        cluster_batches = []
-        cluster_seq_origin_batches = []
-        if len(list(cluster_results)) == 1 :
-            Cluster, cluster_seq_origin = cluster_results[0]
-            break
-        else:
-            for i in range(0, len(cluster_results), 2): # merge read_batches, this is easy since by construction, all clusters have unique IDs
-                # H = defaultdict(set)
-                new_clusters1, cluster_seq_origin1 = cluster_results[i]
-                assert len(new_clusters1) == len(cluster_seq_origin1)
-                new_clusters2, cluster_seq_origin2 = cluster_results[i+1]
+    # read_batches = []
+    # cluster_batches = []
+    # cluster_seq_origin_batches = []
+    # if len(list(cluster_results)) == 1 :
+    #     Cluster, cluster_seq_origin = cluster_results[0]
+    #     break
+    # else:
 
-                cluster_seq_origin =  merge_two_dicts(cluster_seq_origin1, cluster_seq_origin2)
-                Cluster =  merge_two_dicts(new_clusters1, new_clusters2)
-                # for k in H1.keys():
-                #     H[k].update(H1[k])
-                # for k in H2.keys():
-                #     H[k].update(H2[k])
 
-                read_batches.append( [ (i, acc, seq, qual, score) for i, (i, acc, seq, qual, score, error_rate) in sorted(cluster_seq_origin.items(), key=lambda x: x[1][4], reverse=True)] )
-                
-                #### DIFF AFTER BUGFIX1 -- the iteration > 1 bug ####
-                # H_batches.append(H)
-                # H_batches.append({})
-                #####################################################
-                cluster_batches.append(Cluster)
-                cluster_seq_origin_batches.append(cluster_seq_origin)
-        it += 1
+    all_repr = [] # all_repr = [top_new_seq_origins]
+    all_cl = []
+    for new_clusters, new_cluster_origins in cluster_results: 
+        all_cl.append(new_clusters)
+        all_repr.append(new_cluster_origins)
+
+    all_clusters = merge_dicts(*all_cl)
+    all_representatives = merge_dicts(*all_repr)
+    representatives_sorted =  [ (i, acc, seq, qual, score) for i, (i, acc, seq, qual, score, error_rate) in sorted(all_representatives.items(), key=lambda x: x[1][4], reverse=True)] 
+    print("number of representatives left to cluster:", len(representatives_sorted))
+    Cluster, cluster_seq_origin = reads_to_clusters(all_clusters, all_representatives, representatives_sorted, p_emp_probs, args)
+
 
     return Cluster, cluster_seq_origin
-
-
-
-# def main(sorted_reads_fastq_file, args):
-#     read_array = [ (i, acc, seq, qual, float(acc.split("_")[-1])) for i, (acc, (seq, qual)) in enumerate(readfq(open(sorted_reads_fastq_file, 'r')))]
-
-#     clusters = cluster_seqs(read_array, args)
-
-#     outfile = open(os.path.join(args.outfolder,  "pre_clusters.csv"), "w")
-#     reads = {acc: (seq,qual) for (acc, (seq, qual)) in  readfq(open(sorted_reads, 'r'))}
-#     output_index = 1
-#     # nonclustered_outfile = open(os.path.join(reads_outfolder, "non_clustered.fa"), "w")
-#     for c_id, all_read_acc in sorted(clusters.items(), key = lambda x: len(x[1]), reverse=True):
-#         for r_acc in all_read_acc:
-#             outfile.write("{0}\t{1}\n".format(c_id,r_acc))
-#         if len(all_read_acc) > 1:
-#             output_index += 1
-
-#     print("Nr clusters larger than 1:", output_index) #, "Non-clustered reads:", len(archived_reads))
-
 
 
