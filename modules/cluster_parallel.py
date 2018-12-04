@@ -304,7 +304,7 @@ def get_best_cluster_block_align(read_cl_id, cluster_seq_origin, hit_clusters_id
     return  best_cluster_id, 0,  -1, -1, -1, alignment_ratio
 
 
-def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, minimizer_database = {}, args):
+def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, args, minimizer_database = {}):
     """
         Iterates throughreads in sorted order (w.r.t. score) and:
             1. homopolymenr compresses the read
@@ -385,9 +385,12 @@ def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, mi
         best_cluster_id = max(best_cluster_id_m,best_cluster_id_a)
         
         if best_cluster_id >= 0:
-            cluster_to_new_cluster_id[read_cl_id] = best_cluster_id
+            # cluster_to_new_cluster_id[read_cl_id] = best_cluster_id
+            Cluster[best_cluster_id].append(acc) 
+            del cluster_seq_origin[read_cl_id]
 
-        else :  # Stays in current cluser, adding representative minimixers
+        else :  # New cluster, adding representative minimixers
+            Cluster[read_cl_id] = [acc]
             for m, pos in minimizers:
                 if m in minimizer_database:
                     minimizer_database[m].add(read_cl_id)
@@ -397,15 +400,15 @@ def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, mi
 
     
     # new no graph approach ####
-    for read_cl_id in cluster_to_new_cluster_id:
-        new_cl_id = cluster_to_new_cluster_id[read_cl_id]
-        # add all read acc to new origin
-        all_reads = Cluster[read_cl_id]
-        for read_acc in all_reads:
-            Cluster[new_cl_id].append(read_acc)
-        del Cluster[read_cl_id]
-        # delete old origins
-        del cluster_seq_origin[read_cl_id]
+    # for read_cl_id in cluster_to_new_cluster_id:
+    #     new_cl_id = cluster_to_new_cluster_id[read_cl_id]
+    #     # add all read acc to new origin
+    #     all_reads = Cluster[read_cl_id]
+    #     for read_acc in all_reads:
+    #         Cluster[new_cl_id].append(read_acc)
+    #     del Cluster[read_cl_id]
+    #     # delete old origins
+    #     del cluster_seq_origin[read_cl_id]
     ##########################
 
 
@@ -421,8 +424,8 @@ def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, mi
     if aln_called > 0:
         print("Percent passed alignment criteria out of number of calls to the alignment module:{0}".format(round(100*aln_passed_criteria/float(aln_called), 2) )) 
 
-    new_cluster_seq_origins = {k,v for cluster_seq_origin.items() if k not in init_cluster_seq_origin}
-    new_clusters = {k,v for Cluster.items() if k not in init_clusters}
+    new_cluster_seq_origins = {k : v for k, v in cluster_seq_origin.items() if k not in init_cluster_seq_origin}
+    new_clusters = {k : v for k,v in Cluster.items() if k not in init_clusters}
     assert len(new_clusters) == len(new_cluster_seq_origins)
 
     return new_clusters, new_cluster_seq_origins, minimizer_database
@@ -487,6 +490,7 @@ def parallelize(function, data_chunked, nr_cores):
 
 
 def cluster_seqs(read_array, p_emp_probs, args):
+    all_start = time()
     # split sorted reads into batches
     print("Using {0} batches.".format(args.nr_cores))
 
@@ -496,120 +500,139 @@ def cluster_seqs(read_array, p_emp_probs, args):
     # for i, acc, seq, qual, score in top_read_batch:
     #     top_clust[i] = [acc]
     #     top_clust_origins[i] = (i, acc, seq, qual, score)
-    top_new_clusters, top_new_seq_origins, minimizer_database = reads_to_clusters({}, {}, top_read_batch, p_emp_probs, minimizer_database = {}, args)
+    top_new_clusters, top_new_seq_origins, top_minimizer_database = reads_to_clusters({}, {}, top_read_batch, p_emp_probs, args, minimizer_database = {})
 
     # Parallelize over args.nr_cores cores
-    chunk_size = (len(read_array) - 10000 )/ (args.nr_cores - 1)
-    print(chunk_size)
-    cluster_batches = []
-    cluster_seq_origin_batches = []
-    for sublist in batch(read_array[10000:], chunk_size):
-        tmp_clust = {}
-        tmp_clust_origin = {}
-        for i, acc, seq, qual, score in sublist:
-            tmp_clust[i] = [acc]
-            tmp_clust_origin[i] = (i, acc, seq, qual, score)
-        cluster_batches.append(tmp_clust)
-        cluster_seq_origin_batches.append(tmp_clust_origin)
+    chunk_size = int((len(read_array) - 10000 )/ (args.nr_cores - 1)) + 1
+    print("Chunk sizes:", chunk_size)
+    print("Number of reference clusters:", len(top_new_clusters))
+    # cluster_batches = []
+    # cluster_seq_origin_batches = []
+    read_batches = [batch for batch in batch(read_array[10000:], chunk_size)]
+    # for sublist in batch(read_array[3000:], chunk_size):
+    #     tmp_clust = {}
+    #     tmp_clust_origin = {}
+    #     for i, acc, seq, qual, score in sublist:
+    #         tmp_clust[i] = [acc]
+    #         tmp_clust_origin[i] = (i, acc, seq, qual, score)
+        # cluster_batches.append(tmp_clust)
+        # cluster_seq_origin_batches.append(tmp_clust_origin)
 
-    results = parallelize(reads_to_clusters, [((top_clusters, top_new_seq_origins, read_batches[i], p_emp_probs, minimizer_database, args), {}) for i in range(len(cluster_batches))], args.nr_cores)
-    all_cl, all_repr, all_minimizer_databases = [top_new_clusters],[top_new_seq_origins], [minimizer_database]
+    results = parallelize(reads_to_clusters_helper, [((top_new_clusters, top_new_seq_origins, read_batches[i], p_emp_probs, args), {"minimizer_database" : top_minimizer_database}) for i in range(len(read_batches))], args.nr_cores)
+    # all_cl, all_repr, all_minimizer_databases = [top_new_clusters],[top_new_seq_origins], [minimizer_database]
+    all_repr = [top_new_seq_origins]
     for new_clusters, new_cluster_origins, min_db in results: 
-        all_cl.append(new_clusters)
+        # all_cl.append(new_clusters)
         all_repr.append(new_cluster_origins)
-        all_minimizer_databases.append(min_db)
+        # all_minimizer_databases.append(min_db)
 
     all_representatives = merge_dicts(*all_repr)
-    all_clusters = merge_dicts(*all_cl)
-    combined_minimizer_db = continue_here,....
-    print("Total number of created origins in parallel:", all_origins)
+    all_representatives_sorted = sorted(list(all_representatives.values()), key = lambda x: x[4], reverse = True)
+    all_representatives_sorted = [ (read_cl_id, acc, seq, qual, score) for (read_cl_id, acc, seq, qual, score, h_pol_compr_error_rate) in  all_representatives_sorted ]     #(read_cl_id, acc, seq, qual, score, h_pol_compr_error_rate)
+    print("Clusters created in parallel:", len(all_representatives_sorted))
 
 
-    # Process all representiatives single core to create final set of representatives
+    # Process all representiatives except top ones on a single core to create final set of representatives
 
+    all_clusters, all_seq_origins, minimizer_database = reads_to_clusters({}, {}, all_representatives_sorted, p_emp_probs, args, minimizer_database = {})
+    print("Final clusters generated new:", len(all_seq_origins))
 
     # Parallelize assignemt of reads to representatives
+    final_clusters = representative_assignment(all_seq_origins_empty_clusters, all_seq_origins, read_array_batches[i], p_emp_probs, args, minimizer_database = minimizer_database)
+
+
+    print("TOTAL TIME NEW:", time() - all_start)
+
+    old_start = time()
+    old_clusters, old_seq_origins, top_minimizer_database = reads_to_clusters({}, {}, read_array, p_emp_probs, args, minimizer_database = {})
+    print("Final clusters generated old:", len(old_clusters), len(old_seq_origins))
+    print("TOTAL TIME OLD:", time() - old_start)
+
+    sys.exit()
 
 
 
-    ## OLD CODE
 
-    read_batches = [read_array[i:len(read_array):args.nr_cores] for i in range(args.nr_cores)]
+
+
+    # ## OLD CODE
+
+    # read_batches = [read_array[i:len(read_array):args.nr_cores] for i in range(args.nr_cores)]
     
-    cluster_batches = []
-    cluster_seq_origin_batches = []
-    for batch in read_batches:
-        tmp_clust = {}
-        tmp_clust_origin = {}
-        for i, acc, seq, qual, score in batch:
-            tmp_clust[i] = [acc]
-            tmp_clust_origin[i] = (i, acc, seq, qual, score)
-        cluster_batches.append(tmp_clust)
-        cluster_seq_origin_batches.append(tmp_clust_origin)
+    # cluster_batches = []
+    # cluster_seq_origin_batches = []
+    # for batch in read_batches:
+    #     tmp_clust = {}
+    #     tmp_clust_origin = {}
+    #     for i, acc, seq, qual, score in batch:
+    #         tmp_clust[i] = [acc]
+    #         tmp_clust_origin[i] = (i, acc, seq, qual, score)
+    #     cluster_batches.append(tmp_clust)
+    #     cluster_seq_origin_batches.append(tmp_clust_origin)
 
-    del read_array
+    # del read_array
 
-    # do clustering
+    # # do clustering
 
-    ####### parallelize alignment #########
-    # pool = Pool(processes=mp.cpu_count())
-    original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
-    signal.signal(signal.SIGINT, original_sigint_handler)
-    it = 1
-    while True:
-        pool = Pool(processes=int(args.nr_cores/it))
-        print("Iteration:", it)
-        if args.nr_cores == 1:
-            # print([len(cluster_batches[0][i]) for i in cluster_batches[0].keys()])
-            Cluster, cluster_seq_origin = reads_to_clusters(cluster_batches[0], cluster_seq_origin_batches[0], read_batches[0], p_emp_probs, args)
-            # print([len(Cluster[cl]) for cl in Cluster])
-            assert len(Cluster) == len(cluster_seq_origin)
-            break
-        #     sys.exit()
-        try:
-            print([len(b) for b in read_batches])
+    # ####### parallelize alignment #########
+    # # pool = Pool(processes=mp.cpu_count())
+    # original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    # signal.signal(signal.SIGINT, original_sigint_handler)
+    # it = 1
+    # while True:
+    #     pool = Pool(processes=int(args.nr_cores/it))
+    #     print("Iteration:", it)
+    #     if args.nr_cores == 1:
+    #         # print([len(cluster_batches[0][i]) for i in cluster_batches[0].keys()])
+    #         Cluster, cluster_seq_origin = reads_to_clusters(cluster_batches[0], cluster_seq_origin_batches[0], read_batches[0], p_emp_probs, args)
+    #         # print([len(Cluster[cl]) for cl in Cluster])
+    #         assert len(Cluster) == len(cluster_seq_origin)
+    #         break
+    #     #     sys.exit()
+    #     try:
+    #         print([len(b) for b in read_batches])
             
-            res = pool.map_async(reads_to_clusters_helper, [ ((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, args), {}) for i in range(len(read_batches))] )
-            cluster_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
-        except KeyboardInterrupt:
-            print("Caught KeyboardInterrupt, terminating workers")
-            pool.terminate()
-            sys.exit()
-        else:
-            # print("Normal termination")
-            pool.close()
-        pool.join()
+    #         res = pool.map_async(reads_to_clusters_helper, [ ((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, args), {}) for i in range(len(read_batches))] )
+    #         cluster_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
+    #     except KeyboardInterrupt:
+    #         print("Caught KeyboardInterrupt, terminating workers")
+    #         pool.terminate()
+    #         sys.exit()
+    #     else:
+    #         # print("Normal termination")
+    #         pool.close()
+    #     pool.join()
 
-        read_batches = []
-        # H_batches = []
-        cluster_batches = []
-        cluster_seq_origin_batches = []
-        if len(list(cluster_results)) == 1 :
-            Cluster, cluster_seq_origin = cluster_results[0]
-            break
-        else:
-            for i in range(0, len(cluster_results), 2): # merge read_batches, this is easy since by construction, all clusters have unique IDs
-                # H = defaultdict(set)
-                new_clusters1, cluster_seq_origin1 = cluster_results[i]
-                assert len(new_clusters1) == len(cluster_seq_origin1)
-                new_clusters2, cluster_seq_origin2 = cluster_results[i+1]
+    #     read_batches = []
+    #     # H_batches = []
+    #     cluster_batches = []
+    #     cluster_seq_origin_batches = []
+    #     if len(list(cluster_results)) == 1 :
+    #         Cluster, cluster_seq_origin = cluster_results[0]
+    #         break
+    #     else:
+    #         for i in range(0, len(cluster_results), 2): # merge read_batches, this is easy since by construction, all clusters have unique IDs
+    #             # H = defaultdict(set)
+    #             new_clusters1, cluster_seq_origin1 = cluster_results[i]
+    #             assert len(new_clusters1) == len(cluster_seq_origin1)
+    #             new_clusters2, cluster_seq_origin2 = cluster_results[i+1]
 
-                cluster_seq_origin =  merge_two_dicts(cluster_seq_origin1, cluster_seq_origin2)
-                Cluster =  merge_two_dicts(new_clusters1, new_clusters2)
-                # for k in H1.keys():
-                #     H[k].update(H1[k])
-                # for k in H2.keys():
-                #     H[k].update(H2[k])
+    #             cluster_seq_origin =  merge_two_dicts(cluster_seq_origin1, cluster_seq_origin2)
+    #             Cluster =  merge_two_dicts(new_clusters1, new_clusters2)
+    #             # for k in H1.keys():
+    #             #     H[k].update(H1[k])
+    #             # for k in H2.keys():
+    #             #     H[k].update(H2[k])
 
-                read_batches.append( [ (i, acc, seq, qual, score) for i, (i, acc, seq, qual, score, error_rate) in sorted(cluster_seq_origin.items(), key=lambda x: x[1][4], reverse=True)] )
+    #             read_batches.append( [ (i, acc, seq, qual, score) for i, (i, acc, seq, qual, score, error_rate) in sorted(cluster_seq_origin.items(), key=lambda x: x[1][4], reverse=True)] )
                 
-                #### DIFF AFTER BUGFIX1 -- the iteration > 1 bug ####
-                # H_batches.append(H)
-                # H_batches.append({})
-                #####################################################
-                cluster_batches.append(Cluster)
-                cluster_seq_origin_batches.append(cluster_seq_origin)
-        it += 1
+    #             #### DIFF AFTER BUGFIX1 -- the iteration > 1 bug ####
+    #             # H_batches.append(H)
+    #             # H_batches.append({})
+    #             #####################################################
+    #             cluster_batches.append(Cluster)
+    #             cluster_seq_origin_batches.append(cluster_seq_origin)
+    #     it += 1
 
     return Cluster, cluster_seq_origin
 
