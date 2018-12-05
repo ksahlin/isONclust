@@ -573,6 +573,7 @@ def cluster_seqs(read_array, p_emp_probs, args):
 
     chunk_size = int((len(read_array))/ num_batches) + 1
     read_batches = [batch for batch in batch_list(read_array, chunk_size)]
+    print("Using batch sizes:", [len(b) for b in read_batches] )
 
     
     cluster_batches = []
@@ -602,9 +603,13 @@ def cluster_seqs(read_array, p_emp_probs, args):
     # pool = Pool(processes=mp.cpu_count())
     original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGINT, original_sigint_handler)
+    mp.set_start_method('spawn')
+    print(mp.get_context())
+
     pool = Pool(processes=int(num_batches))
     try:
         print([len(b) for b in read_batches])
+        # res = pool.map_async(reads_to_clusters_helper, [ (([], [], [], p_emp_probs, args), {}) for i in range(len(read_batches))] )
         res = pool.map_async(reads_to_clusters_helper, [ ((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, args), {}) for i in range(len(read_batches))] )
         cluster_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
     except KeyboardInterrupt:
