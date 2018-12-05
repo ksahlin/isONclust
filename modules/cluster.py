@@ -596,6 +596,8 @@ def cluster_seqs(read_array, p_emp_probs, args):
         # print([len(Cluster[cl]) for cl in Cluster])
         assert len(Cluster) == len(cluster_seq_origin)
         return Cluster, cluster_seq_origin
+
+    start_multi = time()
     ####### parallelize alignment #########
     # pool = Pool(processes=mp.cpu_count())
     original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -614,6 +616,7 @@ def cluster_seqs(read_array, p_emp_probs, args):
         pool.close()
     pool.join()
 
+    print("Time elapesd multiprocessing:", time() - start_multi)
     # read_batches = []
     # cluster_batches = []
     # cluster_seq_origin_batches = []
@@ -622,6 +625,7 @@ def cluster_seqs(read_array, p_emp_probs, args):
     #     break
     # else:
 
+    start_joining = time()
 
     all_repr = [] # all_repr = [top_new_seq_origins]
     all_cl = []
@@ -633,8 +637,12 @@ def cluster_seqs(read_array, p_emp_probs, args):
     all_representatives = merge_dicts(*all_repr)
     representatives_sorted =  [ (i, acc, seq, qual, score) for i, (i, acc, seq, qual, score, error_rate) in sorted(all_representatives.items(), key=lambda x: x[1][4], reverse=True)] 
     print("number of representatives left to cluster:", len(representatives_sorted))
+    print("Time elapesd joining clusters:", time() - start_joining)
+
+    start_single = time()
     Cluster, cluster_seq_origin = reads_to_clusters(all_clusters, all_representatives, representatives_sorted, p_emp_probs, args)
 
+    print("Time elapesd single process:", time() - start_single)
 
     return Cluster, cluster_seq_origin
 
