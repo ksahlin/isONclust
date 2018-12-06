@@ -563,6 +563,24 @@ def batch_list(lst, n=1):
 #     return Cluster, cluster_seq_origin
 
 
+def batch_wrt_total_nucl_length(lst, nr_cores=1):
+    tot_length = sum([len(seq) for i, acc, seq, qual, score in lst] )
+    nt_chunk_size = int(tot_length/nr_cores) + 1
+
+    batch = []
+    curr_size = 0
+    for info in lst:
+        curr_size += len(info[2])
+        batch.append(info)
+        if curr_size >= nt_chunk_size:
+            yield batch
+            batch = []
+            curr_size = 0
+    yield batch
+
+    # l = len(lst)
+    # for ndx in range(0, l, n):
+    #     yield lst[ndx:min(ndx + n, l)]
 
 
 def cluster_seqs(read_array, p_emp_probs, args):
@@ -571,9 +589,13 @@ def cluster_seqs(read_array, p_emp_probs, args):
     print("Using {0} batches.".format(num_batches))
     # read_batches = [read_array[i:len(read_array):num_batches] for i in range(num_batches)]
 
-    chunk_size = int((len(read_array))/ num_batches) + 1
-    read_batches = [batch for batch in batch_list(read_array, chunk_size)]
-    print("Using batch sizes:", [len(b) for b in read_batches] )
+    # chunk_size = int((len(read_array))/ num_batches) + 1
+    # read_batches = [batch for batch in batch_list(read_array, chunk_size)]
+    
+    read_batches = [batch for batch in batch_wrt_total_nucl_length(read_array, args.nr_cores)]
+    
+    print("Using total nucleotiide batch sizes:", [sum([len(seq) for i, acc, seq, qual, score in b]) for b in read_batches] )
+    print("Using nr reads batch sizes:", [len(b)  for b in read_batches] )
 
     
     cluster_batches = []
@@ -598,9 +620,9 @@ def cluster_seqs(read_array, p_emp_probs, args):
         assert len(Cluster) == len(cluster_seq_origin)
         return Cluster, cluster_seq_origin
 
-    start_multi = time()
     ####### parallelize alignment #########
     # pool = Pool(processes=mp.cpu_count())
+    start_multi = time()
     original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGINT, original_sigint_handler)
     mp.set_start_method('spawn')
