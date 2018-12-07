@@ -652,7 +652,7 @@ def paralell_clustering(read_array, p_emp_probs, args):
         elif new_nr_repr/float(prev_nr_repr) > 0.8:
             num_batches = 1
         else:
-            num_batches = max(1, int(num_batches*(new_nr_repr/float(prev_nr_repr))))
+            num_batches = max(1, int(round(num_batches*(new_nr_repr/float(prev_nr_repr)))) )
         prev_nr_repr = new_nr_repr
         it += 1
         read_batches = [batch for batch in batch_wrt_total_nucl_length(read_array, num_batches)]
