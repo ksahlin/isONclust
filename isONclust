@@ -65,7 +65,7 @@ def main(args):
     print("started sorting seqs")
     start = time()
     sorted_reads_fastq_file = get_sorted_fastq_for_cluster.main(args)
-    read_array = [ (i, acc, seq, qual, float(acc.split("_")[-1])) for i, (acc, (seq, qual)) in enumerate(readfq(open(sorted_reads_fastq_file, 'r')))]
+    read_array = [ (i, 0, acc, seq, qual, float(acc.split("_")[-1])) for i, (acc, (seq, qual)) in enumerate(readfq(open(sorted_reads_fastq_file, 'r')))]
     print("elapsed time sorting:", time() - start)
 
     print("started imported empirical error probabilities of minimizers shared:")
@@ -102,7 +102,7 @@ def main(args):
 
     origins_outfile = open(os.path.join(args.outfolder,  "cluster_origins.csv"), "w")
     for cl_id, all_read_acc in sorted(clusters.items(), key = lambda x: len(x[1]), reverse=True):
-        read_cl_id, acc, c_seq, c_qual, score, error_rate = cluster_seq_origin[cl_id]
+        read_cl_id, b_i, acc, c_seq, c_qual, score, error_rate = cluster_seq_origin[cl_id]
         origins_outfile.write("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\n".format(read_cl_id, acc, c_seq, c_qual, score, error_rate))
 
 

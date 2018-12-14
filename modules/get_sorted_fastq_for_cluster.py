@@ -3,6 +3,10 @@ import os,sys
 import argparse
 import pysam
 
+import signal
+from multiprocessing import Pool
+import multiprocessing as mp
+
 import operator
 import functools
 
@@ -96,6 +100,28 @@ def reverse_complement(string):
     rev_comp = ''.join([rev_nuc[nucl] for nucl in reversed(string)])
     return(rev_comp)
 
+def batch(iterable, n=1):
+    l = len(iterable)
+    for ndx in range(0, l, n):
+        yield iterable[ndx:min(ndx + n, l)]
+
+
+def calc_score(tup):
+    l, k = tup
+    read_array = []
+    error_rates = []
+    for i, (acc, seq, qual) in enumerate(l):
+        if i % 10000 == 0:
+            print(i, "reads processed.")
+        poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
+        error_rate = poisson_mean/float(len(qual))
+        error_rates.append(error_rate)
+        exp_errors_in_kmers = expected_number_of_erroneous_kmers_speed(qual, k)
+        p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
+        score =  p_no_error_in_kmers  * (len(seq) - k +1)
+        read_array.append((acc, seq, qual, score) )
+    return read_array, error_rates
+
 def main(args):
     start = time()
     k = args.k
@@ -106,16 +132,51 @@ def main(args):
         return args.outfile
 
     elif args.fastq:
+
+        reads = [ (acc,seq, qual) for acc, (seq, qual) in readfq(open(args.fastq, 'r'))]
+        start = time()
+        read_chunk_size = int(len(reads)/(args.nr_cores -1)) + 1
+        read_batches = [b for b in batch(reads, read_chunk_size)]
+        del reads
+        ####### parallelize alignment #########
+        # pool = Pool(processes=mp.cpu_count())
+        original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, original_sigint_handler)
+        # mp.set_start_method('spawn')
+        # print(mp.get_context())
+        print("Using {0} cores.".format(args.nr_cores))
+        start_multi = time()
+        pool = Pool(processes=int(args.nr_cores - 1))
+        try:
+            print([len(b) for b in read_batches])
+            res = pool.map_async(calc_score, [(b,k) for b in read_batches])
+            score_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
+        except KeyboardInterrupt:
+            print("Caught KeyboardInterrupt, terminating workers")
+            pool.terminate()
+            sys.exit()
+        else:
+            pool.close()
+        pool.join()
+
+        print("Time elapesd multiprocessing:", time() - start_multi)
+        read_array_new, error_rates_new = [], []
+        for r_a, err_rates in score_results:
+            for item in r_a:
+                read_array_new.append(item)
+            for item2 in err_rates:
+                error_rates_new.append(item2)
+        # read_array_new = [item for r_a, err_rates in score_results for item in r_a]
+        read_array_new.sort(key=lambda x: x[3], reverse=True)
+        error_rates_new.sort()
+
+
+
         read_array = []
         for i, (acc, (seq, qual)) in enumerate(readfq(open(args.fastq, 'r'))):
             if i % 10000 == 0:
                 print(i, "reads processed.")
             
-            # kmer_quals = get_kmer_quals(qual, k)
-            # exp_errors_in_kmers = expected_number_of_erroneous_kmers(kmer_quals)
-            # p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float(len(kmer_quals))
-            # score =  p_no_error_in_kmers  * (len(seq) - k +1)
-            # print("Exact:", p_no_error_in_kmers, score, exp_errors_in_kmers)
 
             poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
             error_rate = poisson_mean/float(len(qual))
@@ -125,14 +186,14 @@ def main(args):
             score =  p_no_error_in_kmers  * (len(seq) - k +1)
             # print("Exact speed:", p_no_error_in_kmers, score, exp_errors_in_kmers)
 
-            # p_no_error_in_kmers_appr =  get_p_no_error_in_kmers_approximate(qual,k)
-            # score = p_no_error_in_kmers_appr * (len(seq) - k +1)
-            # print("approx:", p_no_error_in_kmers_appr, score)
-
             # print(sum(p_no_error_in_kmers)/float(len(p_no_error_in_kmers)), p_no_error_in_kmers_appr, qual)
             read_array.append((acc, seq, qual, score) )
         
         read_array.sort(key=lambda x: x[3], reverse=True)
+        print(read_array == read_array_new)
+        print(len(read_array), len(read_array_new))
+        print([a[0] for a in read_array] == [a[0] for a in read_array_new])
+
         reads_sorted_outfile = open(args.outfile, "w")
         for i, (acc, seq, qual, score) in enumerate(read_array):
             reads_sorted_outfile.write("@{0}\n{1}\n+\n{2}\n".format(acc + "_{0}".format(score), seq, qual))
