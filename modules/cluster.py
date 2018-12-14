@@ -446,6 +446,10 @@ def reads_to_clusters_helper(arguments):
     args, kwargs = arguments
     return reads_to_clusters(*args, **kwargs)
 
+def reads_to_clusters_helper2(arguments):
+    for k,v in arguments.items():
+        args, kwargs = v
+    return reads_to_clusters(*args, **kwargs)
 
 def merge_two_dicts(x, y):
     z = x.copy()   # start with x's keys and values
@@ -474,93 +478,6 @@ def batch_list(lst, n=1):
         yield lst[ndx:min(ndx + n, l)]
 
 
-# def cluster_seqs(read_array, p_emp_probs, args):
-#     # split sorted reads into batches
-#     num_batches = next_power_of_2(args.nr_cores)
-#     print("Using {0} batches.".format(num_batches))
-#     # read_batches = [read_array[i:len(read_array):num_batches] for i in range(num_batches)]
-
-#     chunk_size = int((len(read_array))/ num_batches) + 1
-#     read_batches = [batch for batch in batch_list(read_array, chunk_size)]
-
-    
-#     cluster_batches = []
-#     cluster_seq_origin_batches = []
-#     for batch in read_batches:
-#         tmp_clust = {}
-#         tmp_clust_origin = {}
-#         for i, acc, seq, qual, score in batch:
-#             tmp_clust[i] = [acc]
-#             tmp_clust_origin[i] = (i, acc, seq, qual, score)
-#         cluster_batches.append(tmp_clust)
-#         cluster_seq_origin_batches.append(tmp_clust_origin)
-
-#     # H_batches = [{} for i in range(num_batches) ]
-#     del read_array
-
-#     # do clustering
-
-#     ####### parallelize alignment #########
-#     # pool = Pool(processes=mp.cpu_count())
-#     original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
-#     signal.signal(signal.SIGINT, original_sigint_handler)
-#     it = 1
-#     while True:
-#         pool = Pool(processes=int(num_batches/it))
-#         print("Iteration:", it)
-#         if num_batches == 1:
-#             # print([len(cluster_batches[0][i]) for i in cluster_batches[0].keys()])
-#             Cluster, cluster_seq_origin = reads_to_clusters(cluster_batches[0], cluster_seq_origin_batches[0], read_batches[0], p_emp_probs, args)
-#             # print([len(Cluster[cl]) for cl in Cluster])
-#             assert len(Cluster) == len(cluster_seq_origin)
-#             break
-#         #     sys.exit()
-#         try:
-#             print([len(b) for b in read_batches])
-            
-#             res = pool.map_async(reads_to_clusters_helper, [ ((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, args), {}) for i in range(len(read_batches))] )
-#             cluster_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
-#         except KeyboardInterrupt:
-#             print("Caught KeyboardInterrupt, terminating workers")
-#             pool.terminate()
-#             sys.exit()
-#         else:
-#             # print("Normal termination")
-#             pool.close()
-#         pool.join()
-
-#         read_batches = []
-#         # H_batches = []
-#         cluster_batches = []
-#         cluster_seq_origin_batches = []
-#         if len(list(cluster_results)) == 1 :
-#             Cluster, cluster_seq_origin = cluster_results[0]
-#             break
-#         else:
-#             for i in range(0, len(cluster_results), 2): # merge read_batches, this is easy since by construction, all clusters have unique IDs
-#                 # H = defaultdict(set)
-#                 new_clusters1, cluster_seq_origin1 = cluster_results[i]
-#                 assert len(new_clusters1) == len(cluster_seq_origin1)
-#                 new_clusters2, cluster_seq_origin2 = cluster_results[i+1]
-
-#                 cluster_seq_origin =  merge_two_dicts(cluster_seq_origin1, cluster_seq_origin2)
-#                 Cluster =  merge_two_dicts(new_clusters1, new_clusters2)
-#                 # for k in H1.keys():
-#                 #     H[k].update(H1[k])
-#                 # for k in H2.keys():
-#                 #     H[k].update(H2[k])
-
-#                 read_batches.append( [ (i, acc, seq, qual, score) for i, (i, acc, seq, qual, score, error_rate) in sorted(cluster_seq_origin.items(), key=lambda x: x[1][4], reverse=True)] )
-                
-#                 #### DIFF AFTER BUGFIX1 -- the iteration > 1 bug ####
-#                 # H_batches.append(H)
-#                 # H_batches.append({})
-#                 #####################################################
-#                 cluster_batches.append(Cluster)
-#                 cluster_seq_origin_batches.append(cluster_seq_origin)
-#         it += 1
-
-#     return Cluster, cluster_seq_origin
 
 
 def batch_wrt_total_nucl_length(lst, nr_cores=1):
@@ -581,6 +498,30 @@ def batch_wrt_total_nucl_length(lst, nr_cores=1):
     # l = len(lst)
     # for ndx in range(0, l, n):
     #     yield lst[ndx:min(ndx + n, l)]
+
+
+#### TMP MEMORY CHECK
+import pickle
+import sys
+# from collections import OrderedDict
+
+def get_pickled_memory(data):
+    return sum(sys.getsizeof(pickle.dumps(d)) for d in data)
+    # print("pikled size:", sum(sys.getsizeof(pickle.dumps(d)) for d in data))
+    # numprocs = 10
+    # a = ['a' for i in range(1000000)]
+    # b = [a+[] for i in range(100)]
+
+    # data1 = [b+[] for i in range(numprocs)]
+    # data2 = [data1+[]] + ['1' for i in range(numprocs-1)]
+    # data3 = [['1'] for i in range(numprocs)]
+    # sizes = OrderedDict()
+    # for idx, data in enumerate((data1, data2, data3)):
+    #     sizes['data{}'.format(idx+1)] = sum(sys.getsizeof(pickle.dumps(d))
+    #                                             for d in data)
+
+    # for k, v in sizes.items():
+    #     print("{}: {}".format(k, v))
 
 def paralell_clustering(read_array, p_emp_probs, args):
 
@@ -619,7 +560,23 @@ def paralell_clustering(read_array, p_emp_probs, args):
         pool = Pool(processes=int(num_batches))
         try:
             print([len(b) for b in read_batches])
-            res = pool.map_async(reads_to_clusters_helper, [ ((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, args), {}) for i in range(len(read_batches))] )
+
+            ############################################
+            data1 = [ ((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, args), {}) for i in range(len(read_batches))]
+            print("Size:{0}Mb".format( [round( get_pickled_memory(d)/float(1000000), 2) for d in data1 ] ))
+            data2 = [ {i :((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, args), {})} for i in range(len(read_batches))]
+            print("Size:{0}Mb".format( [round( get_pickled_memory(d)/float(1000000), 2) for d in data2 ] ))
+            # sys.exit()
+            # for data in [ ((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, args), {}) for i in range(len(read_batches))]:
+            #     print("Size:{0}Mb".format(round( get_pickled_memory(data)/float(1000000), 2) ))
+            #     data2 = {"k" :data, 'k2': []}
+            #     print("Size:{0}Mb".format(round( get_pickled_memory(data2)/float(1000000), 7) ))
+            #     print("Size:{0}Mb".format( [round( get_pickled_memory(d)/float(1000000), 2) for d in data for s in d] ))
+            #     print()
+            # sys.exit()
+            ############################################
+
+            res = pool.map_async(reads_to_clusters_helper2, data2)
             cluster_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
         except KeyboardInterrupt:
             print("Caught KeyboardInterrupt, terminating workers")
