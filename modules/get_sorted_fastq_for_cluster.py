@@ -142,8 +142,9 @@ def main(args):
         # pool = Pool(processes=mp.cpu_count())
         original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
         signal.signal(signal.SIGINT, original_sigint_handler)
-        # mp.set_start_method('spawn')
-        # print(mp.get_context())
+        mp.set_start_method('spawn')
+        print(mp.get_context())
+        print("Environment set:", mp.get_context())
         print("Using {0} cores.".format(args.nr_cores))
         start_multi = time()
         pool = Pool(processes=int(args.nr_cores - 1))
@@ -160,39 +161,39 @@ def main(args):
         pool.join()
 
         print("Time elapesd multiprocessing:", time() - start_multi)
-        read_array_new, error_rates_new = [], []
+        read_array, error_rates = [], []
         for r_a, err_rates in score_results:
             for item in r_a:
-                read_array_new.append(item)
+                read_array.append(item)
             for item2 in err_rates:
-                error_rates_new.append(item2)
-        # read_array_new = [item for r_a, err_rates in score_results for item in r_a]
-        read_array_new.sort(key=lambda x: x[3], reverse=True)
-        error_rates_new.sort()
+                error_rates.append(item2)
+        # read_array = [item for r_a, err_rates in score_results for item in r_a]
+        read_array.sort(key=lambda x: x[3], reverse=True)
+        error_rates.sort()
 
 
 
-        read_array = []
-        for i, (acc, (seq, qual)) in enumerate(readfq(open(args.fastq, 'r'))):
-            if i % 10000 == 0:
-                print(i, "reads processed.")
+        # read_array = []
+        # for i, (acc, (seq, qual)) in enumerate(readfq(open(args.fastq, 'r'))):
+        #     if i % 10000 == 0:
+        #         print(i, "reads processed.")
             
 
-            poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
-            error_rate = poisson_mean/float(len(qual))
-            error_rates.append(error_rate)
-            exp_errors_in_kmers = expected_number_of_erroneous_kmers_speed(qual, k)
-            p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
-            score =  p_no_error_in_kmers  * (len(seq) - k +1)
-            # print("Exact speed:", p_no_error_in_kmers, score, exp_errors_in_kmers)
+        #     poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
+        #     error_rate = poisson_mean/float(len(qual))
+        #     error_rates.append(error_rate)
+        #     exp_errors_in_kmers = expected_number_of_erroneous_kmers_speed(qual, k)
+        #     p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
+        #     score =  p_no_error_in_kmers  * (len(seq) - k +1)
+        #     # print("Exact speed:", p_no_error_in_kmers, score, exp_errors_in_kmers)
 
-            # print(sum(p_no_error_in_kmers)/float(len(p_no_error_in_kmers)), p_no_error_in_kmers_appr, qual)
-            read_array.append((acc, seq, qual, score) )
+        #     # print(sum(p_no_error_in_kmers)/float(len(p_no_error_in_kmers)), p_no_error_in_kmers_appr, qual)
+        #     read_array.append((acc, seq, qual, score) )
         
-        read_array.sort(key=lambda x: x[3], reverse=True)
-        print(read_array == read_array_new)
-        print(len(read_array), len(read_array_new))
-        print([a[0] for a in read_array] == [a[0] for a in read_array_new])
+        # read_array.sort(key=lambda x: x[3], reverse=True)
+        # print(read_array == read_array_new)
+        # print(len(read_array), len(read_array_new))
+        # print([a[0] for a in read_array] == [a[0] for a in read_array_new])
 
         reads_sorted_outfile = open(args.outfile, "w")
         for i, (acc, seq, qual, score) in enumerate(read_array):

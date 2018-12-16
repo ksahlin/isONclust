@@ -579,8 +579,11 @@ def paralell_clustering(read_array, p_emp_probs, args):
     # pool = Pool(processes=mp.cpu_count())
     original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGINT, original_sigint_handler)
-    mp.set_start_method('spawn')
-    print(mp.get_context())
+    try:
+        mp.set_start_method('spawn')
+        print("Environment set:", mp.get_context())
+    except RuntimeError:
+        print("Environment already set:", mp.get_context())
     it = 1
     while True:
         # Structure up batches
