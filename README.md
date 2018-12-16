@@ -4,7 +4,7 @@ isONclust
 isONclust is a tool for clustering either PacBio Iso-Seq reads, or Oxford Nanopore reads into clusters, where each cluster represents all reads that came from a gene. Output is a tsv file with each read assigned to a cluster-ID. Detailed information is available in [preprint](https://www.biorxiv.org/content/early/2018/11/06/463463).  
 
 
-isONclust is distributed as a python package supported on Linux / OSX with python v>=2.7, and 3.4-3.6, 3.5-dev and 3.6-dev [![Build Status](https://travis-ci.org/ksahlin/isONclust.svg?branch=master)](https://travis-ci.org/ksahlin/isONclust)
+isONclust is distributed as a python package supported on Linux / OSX with python v>=3.4 as of version 0.0.2 and above (due to updates in python's multiprocessing library). [![Build Status](https://travis-ci.org/ksahlin/isONclust.svg?branch=master)](https://travis-ci.org/ksahlin/isONclust).
 
 Table of Contents
 =================
