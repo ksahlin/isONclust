@@ -149,8 +149,8 @@ def get_all_hits_new(minimizers, H, Clusters, read_cl_id):
     for i, (m, pos) in enumerate(minimizers): # iterating over minimizers from upstream to downstream in read
         if m in H:
             for cl_id in H[m]: 
-                if cl_id not in Clusters:
-                    continue
+                # if cl_id not in Clusters:
+                #     continue
                 hit_clusters_ids[cl_id] += 1
                 hit_clusters_hit_index[cl_id].append(i) # index of the minimizer among the coordinate sorted minimizers in the read
                 hit_clusters_hit_positions[cl_id].append(pos) # positions of the minimizer among the coordinate sorted minimizers in the read
@@ -502,10 +502,25 @@ def next_power_of_2(x):
     return 1 if x == 0 else 2**(x - 1).bit_length()
 
 
-def batch_list(lst, n=1):
-    l = len(lst)
-    for ndx in range(0, l, n):
-        yield lst[ndx:min(ndx + n, l)]
+def batch_list(lst, n=1, merge_consecutive = False ):
+    if merge_consecutive:
+        batch_id = 2
+        batch = []
+        for info in lst:
+            if info[1] <= batch_id:
+                batch.append(info)
+            else: # first sequence in new batch
+                yield batch
+                batch_id += 2
+                batch = []
+                batch.append(info)
+        yield batch
+
+    else:
+        l = len(lst)
+        chunk_size = int(l/n) + 1
+        for ndx in range(0, l, chunk_size):
+            yield lst[ndx:min(ndx + chunk_size, l)]
 
 
 
@@ -556,9 +571,9 @@ def get_pickled_memory(data):
 def paralell_clustering(read_array, p_emp_probs, args):
 
     num_batches = args.nr_cores 
-    prev_nr_repr = len(read_array)
+    # prev_nr_repr = len(read_array)
 
-    read_batches = [batch for batch in batch_wrt_total_nucl_length(read_array, num_batches)]
+    read_batches = [batch for batch in batch_list(read_array, num_batches)]
     print("Using total nucleotide batch sizes:", [sum([len(seq) for i, b_i, acc, seq, qual, score in b]) for b in read_batches] )
     print("Using nr reads batch sizes:", [len(b)  for b in read_batches] )
     cluster_batches = []
@@ -643,13 +658,15 @@ def paralell_clustering(read_array, p_emp_probs, args):
         if num_batches == 1:
             return all_clusters, all_representatives
 
-        elif new_nr_repr/float(prev_nr_repr) > 0.8:
-            num_batches = 1
-        else:
-            num_batches = max(1, int(round(num_batches*(new_nr_repr/float(prev_nr_repr)))) )
-        prev_nr_repr = new_nr_repr
+        # elif new_nr_repr/float(prev_nr_repr) > 0.8:
+        #     num_batches = 1
+        # else:
+        #     num_batches = max(1, int(round(num_batches*(new_nr_repr/float(prev_nr_repr)))) )
+        # prev_nr_repr = new_nr_repr
         it += 1
-        read_batches = [batch for batch in batch_wrt_total_nucl_length(read_array, num_batches)]
+        read_batches = [batch for batch in batch_list(read_array, num_batches, merge_consecutive = True)]
+        num_batches = len(read_batches)
+        print("Batches after pairwise consecutive merge:", num_batches)
         print("Using total nucleotide batch sizes:", [sum([len(seq) for i, b_i, acc, seq, qual, score in b]) for b in read_batches] )
         print("Using nr reads batch sizes:", [len(b)  for b in read_batches] )
         cluster_batches = []
@@ -668,126 +685,11 @@ def paralell_clustering(read_array, p_emp_probs, args):
 
         del all_H
 
+
 def cluster_seqs(read_array, p_emp_probs, args):
     all_clusters, all_representatives = paralell_clustering(read_array, p_emp_probs, args)
     return all_clusters, all_representatives
 
-    # # do clustering
-    # if args.nr_cores == 1:
-    #     num_batches = args.nr_cores 
-    #     read_batches = [read_array[i:len(read_array):num_batches] for i in range(num_batches)]
-    #     cluster_batches = []
-    #     cluster_seq_origin_batches = []
-    #     for batch in read_batches:
-    #         tmp_clust = {}
-    #         tmp_clust_origin = {}
-    #         for i, acc, seq, qual, score in batch:
-    #             tmp_clust[i] = [acc]
-    #             tmp_clust_origin[i] = (i, acc, seq, qual, score)
-    #         cluster_batches.append(tmp_clust)
-    #         cluster_seq_origin_batches.append(tmp_clust_origin)
-    #     # print([len(cluster_batches[0][i]) for i in cluster_batches[0].keys()])
-    #     Cluster, cluster_seq_origin = reads_to_clusters(cluster_batches[0], cluster_seq_origin_batches[0], read_batches[0], p_emp_probs, args)
-    #     print(len(Cluster), len(all_clusters))
-    #     assert Cluster == all_clusters
-    #     print(len(cluster_seq_origin), len(all_representatives))
-    #     print(sorted(cluster_seq_origin.keys()))
-    #     print(sorted(all_representatives.keys()))
-    #     assert sorted(cluster_seq_origin.keys()) == sorted(all_representatives.keys())
-    #     # print(sorted(cluster_seq_origin.values())[:5])
-    #     # print(sorted(all_representatives.values())[:5])
-    #     for item1, item2 in zip(sorted(cluster_seq_origin.values()), sorted(all_representatives.values())):
-    #         print(item1)
-    #         print(item2)
-    #         print()
 
-    #     assert cluster_seq_origin == all_representatives
-
-    #     # print([len(Cluster[cl]) for cl in Cluster])
-    #     assert len(Cluster) == len(cluster_seq_origin)
-    #     return Cluster, cluster_seq_origin
-
-
-    # # split sorted reads into batches
-    # num_batches = args.nr_cores 
-    # print("Using {0} batches.".format(num_batches))
-    # # read_batches = [read_array[i:len(read_array):num_batches] for i in range(num_batches)]
-
-    # # chunk_size = int((len(read_array))/ num_batches) + 1
-    # # read_batches = [batch for batch in batch_list(read_array, chunk_size)]
-    
-    # read_batches = [batch for batch in batch_wrt_total_nucl_length(read_array, args.nr_cores)]
-    
-    # print("Using total nucleotiide batch sizes:", [sum([len(seq) for i, acc, seq, qual, score in b]) for b in read_batches] )
-    # print("Using nr reads batch sizes:", [len(b)  for b in read_batches] )
-
-    
-    # cluster_batches = []
-    # cluster_seq_origin_batches = []
-    # for batch in read_batches:
-    #     tmp_clust = {}
-    #     tmp_clust_origin = {}
-    #     for i, acc, seq, qual, score in batch:
-    #         tmp_clust[i] = [acc]
-    #         tmp_clust_origin[i] = (i, acc, seq, qual, score)
-    #     cluster_batches.append(tmp_clust)
-    #     cluster_seq_origin_batches.append(tmp_clust_origin)
-
-    # # H_batches = [{} for i in range(num_batches) ]
-    # del read_array
-
-    # # do clustering
-    # if num_batches == 1:
-    #     # print([len(cluster_batches[0][i]) for i in cluster_batches[0].keys()])
-    #     Cluster, cluster_seq_origin = reads_to_clusters(cluster_batches[0], cluster_seq_origin_batches[0], read_batches[0], p_emp_probs, args)
-    #     # print([len(Cluster[cl]) for cl in Cluster])
-    #     assert len(Cluster) == len(cluster_seq_origin)
-    #     return Cluster, cluster_seq_origin
-
-    # ####### parallelize alignment #########
-    # # pool = Pool(processes=mp.cpu_count())
-    # start_multi = time()
-    # original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
-    # signal.signal(signal.SIGINT, original_sigint_handler)
-    # mp.set_start_method('spawn')
-    # print(mp.get_context())
-
-    # pool = Pool(processes=int(num_batches))
-    # try:
-    #     print([len(b) for b in read_batches])
-    #     # res = pool.map_async(reads_to_clusters_helper, [ (([], [], [], p_emp_probs, args), {}) for i in range(len(read_batches))] )
-    #     res = pool.map_async(reads_to_clusters_helper, [ ((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, args), {}) for i in range(len(read_batches))] )
-    #     cluster_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
-    # except KeyboardInterrupt:
-    #     print("Caught KeyboardInterrupt, terminating workers")
-    #     pool.terminate()
-    #     sys.exit()
-    # else:
-    #     # print("Normal termination")
-    #     pool.close()
-    # pool.join()
-
-    # print("Time elapesd multiprocessing:", time() - start_multi)
-
-    # start_joining = time()
-
-    # all_repr = [] # all_repr = [top_new_seq_origins]
-    # all_cl = []
-    # for new_clusters, new_cluster_origins in cluster_results: 
-    #     all_cl.append(new_clusters)
-    #     all_repr.append(new_cluster_origins)
-
-    # all_clusters = merge_dicts(*all_cl)
-    # all_representatives = merge_dicts(*all_repr)
-    # representatives_sorted =  [ (i, acc, seq, qual, score) for i, (i, acc, seq, qual, score, error_rate) in sorted(all_representatives.items(), key=lambda x: x[1][4], reverse=True)] 
-    # print("number of representatives left to cluster:", len(representatives_sorted))
-    # print("Time elapesd joining clusters:", time() - start_joining)
-
-    # start_single = time()
-    # Cluster, cluster_seq_origin = reads_to_clusters(all_clusters, all_representatives, representatives_sorted, p_emp_probs, args)
-
-    # print("Time elapesd single process:", time() - start_single)
-
-    # return Cluster, cluster_seq_origin
 
 
