@@ -502,7 +502,7 @@ def next_power_of_2(x):
     return 1 if x == 0 else 2**(x - 1).bit_length()
 
 
-def batch_list(lst, n=1, merge_consecutive = False ):
+def batch_list(lst, nr_cores=1, batch_type = "nr_reads" , merge_consecutive = False ):
     if merge_consecutive:
         batch_id = 2
         batch = []
@@ -517,28 +517,58 @@ def batch_list(lst, n=1, merge_consecutive = False ):
         yield batch
 
     else:
-        l = len(lst)
-        chunk_size = int(l/n) + 1
-        for ndx in range(0, l, chunk_size):
-            yield lst[ndx:min(ndx + chunk_size, l)]
+        if batch_type == "nr_reads":
+            l = len(lst)
+            chunk_size = int(l/nr_cores) + 1
+            for ndx in range(0, l, chunk_size):
+                yield lst[ndx:min(ndx + chunk_size, l)]
+        
+        elif batch_type == "total_nt":
+            tot_length = sum([len(seq) for i, b_i, acc, seq, qual, score in lst] )
+            nt_chunk_size = int(tot_length/nr_cores) + 1
 
-
-
-
-def batch_wrt_total_nucl_length(lst, nr_cores=1):
-    tot_length = sum([len(seq) for i, b_i, acc, seq, qual, score in lst] )
-    nt_chunk_size = int(tot_length/nr_cores) + 1
-
-    batch = []
-    curr_size = 0
-    for info in lst:
-        curr_size += len(info[3])
-        batch.append(info)
-        if curr_size >= nt_chunk_size:
-            yield batch
             batch = []
             curr_size = 0
-    yield batch
+            for info in lst:
+                curr_size += len(info[3])
+                batch.append(info)
+                if curr_size >= nt_chunk_size:
+                    yield batch
+                    batch = []
+                    curr_size = 0
+            yield batch   
+        
+        elif batch_type == "weighted":
+            tot_length = sum([math.sqrt(len(seq)) for i, b_i, acc, seq, qual, score in lst] )
+            nt_chunk_size = int(tot_length/nr_cores) + 1
+            batch = []
+            curr_size = 0
+            for info in lst:
+                curr_size += math.sqrt(len(info[3]))
+                batch.append(info)
+                if curr_size >= nt_chunk_size:
+                    yield batch
+                    batch = []
+                    curr_size = 0
+            yield batch               
+
+
+
+
+# def batch_wrt_total_nucl_length(lst, nr_cores=1):
+#     tot_length = sum([len(seq) for i, b_i, acc, seq, qual, score in lst] )
+#     nt_chunk_size = int(tot_length/nr_cores) + 1
+
+#     batch = []
+#     curr_size = 0
+#     for info in lst:
+#         curr_size += len(info[3])
+#         batch.append(info)
+#         if curr_size >= nt_chunk_size:
+#             yield batch
+#             batch = []
+#             curr_size = 0
+#     yield batch
 
     # l = len(lst)
     # for ndx in range(0, l, n):
@@ -568,12 +598,12 @@ def get_pickled_memory(data):
     # for k, v in sizes.items():
     #     print("{}: {}".format(k, v))
 
-def paralell_clustering(read_array, p_emp_probs, args):
+def parallel_clustering(read_array, p_emp_probs, args):
 
     num_batches = args.nr_cores 
     # prev_nr_repr = len(read_array)
 
-    read_batches = [batch for batch in batch_list(read_array, num_batches)]
+    read_batches = [batch for batch in batch_list(read_array, num_batches, batch_type = "weighted" )]
     print("Using total nucleotide batch sizes:", [sum([len(seq) for i, b_i, acc, seq, qual, score in b]) for b in read_batches] )
     print("Using nr reads batch sizes:", [len(b)  for b in read_batches] )
     cluster_batches = []
@@ -664,7 +694,7 @@ def paralell_clustering(read_array, p_emp_probs, args):
         #     num_batches = max(1, int(round(num_batches*(new_nr_repr/float(prev_nr_repr)))) )
         # prev_nr_repr = new_nr_repr
         it += 1
-        read_batches = [batch for batch in batch_list(read_array, num_batches, merge_consecutive = True)]
+        read_batches = [batch for batch in batch_list(read_array, num_batches, batch_type = "weighted", merge_consecutive = True)]
         num_batches = len(read_batches)
         print("Batches after pairwise consecutive merge:", num_batches)
         print("Using total nucleotide batch sizes:", [sum([len(seq) for i, b_i, acc, seq, qual, score in b]) for b in read_batches] )
@@ -687,7 +717,7 @@ def paralell_clustering(read_array, p_emp_probs, args):
 
 
 def cluster_seqs(read_array, p_emp_probs, args):
-    all_clusters, all_representatives = paralell_clustering(read_array, p_emp_probs, args)
+    all_clusters, all_representatives = parallel_clustering(read_array, p_emp_probs, args)
     return all_clusters, all_representatives
 
 
