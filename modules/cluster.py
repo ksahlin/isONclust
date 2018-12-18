@@ -451,8 +451,9 @@ def reads_to_clusters(Cluster, cluster_seq_origin, sorted_reads, p_emp_probs, H,
     # print("Percent passed alignment criteria total:{0}".format( round(100*aln_passed_criteria/float(i+1), 2) ))    
     # if aln_called > 0:
     #     print("Percent passed alignment criteria out of number of calls to the alignment module:{0}".format(round(100*aln_passed_criteria/float(aln_called), 2) )) 
-
-    return Cluster, cluster_seq_origin, H, new_batch_index
+    # print("PIckled:", get_pickled_memory((Cluster, cluster_seq_origin, H, new_batch_index)))
+    # print("PIckled2:", get_pickled_memory({ new_batch_index : (Cluster, cluster_seq_origin, H, new_batch_index)}))
+    return { new_batch_index : (Cluster, cluster_seq_origin, H, new_batch_index)}
 
 
 def p_shared_minimizer_empirical(error_rate_read, error_rate_center, p_emp_probs):
@@ -672,10 +673,15 @@ def parallel_clustering(read_array, p_emp_probs, args):
         all_repr = [] # all_repr = [top_new_seq_origins]
         all_cl = []
         all_H = {}
-        for new_clusters, new_cluster_origins, H_new, batch_index in cluster_results: 
-            all_cl.append(new_clusters)
-            all_repr.append(new_cluster_origins)
-            all_H[batch_index] =  H_new
+        for output_dict in cluster_results:
+            print("New batch")
+            for k, v in output_dict.items():
+                new_clusters, new_cluster_origins, H_new, batch_index = v
+                print("Batch index", k)
+            # for new_clusters, new_cluster_origins, H_new, batch_index in cluster_results: 
+                all_cl.append(new_clusters)
+                all_repr.append(new_cluster_origins)
+                all_H[batch_index] =  H_new
 
         all_clusters = merge_dicts(*all_cl)
         all_representatives = merge_dicts(*all_repr)
