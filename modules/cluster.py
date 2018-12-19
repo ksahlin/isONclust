@@ -599,6 +599,42 @@ def get_pickled_memory(data):
     # for k, v in sizes.items():
     #     print("{}: {}".format(k, v))
 
+def mkdir_p(path):
+    try:
+        os.makedirs(path)
+        print("creating", path)
+    except OSError as exc:  # Python >2.5
+        if exc.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else:
+            raise
+
+def print_intermediate_results(clusters, cluster_seq_origin, args, iter_nr):
+    path = args.outfolder +"/{0}".format(iter_nr) 
+    mkdir_p( path )
+    outfile = open(os.path.join(path, "pre_clusters.csv"), "w")
+    nontrivial_cluster_index = 0
+    for c_id, all_read_acc in sorted(clusters.items(), key = lambda x: len(x[1]), reverse=True):
+        for r_acc in all_read_acc:
+            outfile.write("{0}\t{1}\n".format(c_id, "_".join([item for item in r_acc.split("_")[:-1]]) ))
+        if len(all_read_acc) > 1:
+            nontrivial_cluster_index += 1
+    print("Nr clusters larger than 1:", nontrivial_cluster_index) #, "Non-clustered reads:", len(archived_reads))
+    print("Nr clusters (all):", len(clusters)) #, "Non-clustered reads:", len(archived_reads))
+
+
+    origins_outfile = open(os.path.join(path,  "cluster_origins.csv"), "w")
+    for cl_id, all_read_acc in sorted(clusters.items(), key = lambda x: len(x[1]), reverse=True):
+        read_cl_id, b_i, acc, c_seq, c_qual, score, error_rate = cluster_seq_origin[cl_id]
+        origins_outfile.write("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\n".format(read_cl_id, acc, c_seq, c_qual, score, error_rate)) 
+    outfile.close()
+    origins_outfile.close()
+
+
+
+
+
+
 def parallel_clustering(read_array, p_emp_probs, args):
 
     num_batches = args.nr_cores 
@@ -643,9 +679,11 @@ def parallel_clustering(read_array, p_emp_probs, args):
             print([len(b) for b in read_batches])
 
             ############################################
-            data1 = [ ((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, lowest_batch_index_db[i], i+1, args), {}) for i in range(len(read_batches))]
-            print("Size:{0}Mb".format( [round( get_pickled_memory(d)/float(1000000), 2) for d in data1 ] ))
+            # data1 = [ ((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, lowest_batch_index_db[i], i+1, args), {}) for i in range(len(read_batches))]
+            # print("Size:{0}Mb".format( [round( get_pickled_memory(d)/float(1000000), 2) for d in data1 ] ))
             data2 = [ {i+1 :((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, lowest_batch_index_db[i], i+1, args), {})} for i in range(len(read_batches))]
+            # data2 = [ {i+1 :(([0]*1000000,0), {})} for i in range(2)]
+            # data2 = [ (([0]*2000000000,0), {}) for i in range(2)]
             print("Size:{0}Mb".format( [round( get_pickled_memory(d)/float(1000000), 2) for d in data2 ] ))
             # sys.exit()
             # for data in [ ((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, args), {}) for i in range(len(read_batches))]:
@@ -693,6 +731,8 @@ def parallel_clustering(read_array, p_emp_probs, args):
         # Determine new number of batches
         if num_batches == 1:
             return all_clusters, all_representatives
+        else:
+            print_intermediate_results(all_clusters, all_representatives, args, it)
 
         # elif new_nr_repr/float(prev_nr_repr) > 0.8:
         #     num_batches = 1
