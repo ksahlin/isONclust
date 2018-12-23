@@ -97,13 +97,20 @@ IsONclust can be used with either Iso-Seq or ONT reads. It takes either a fastq 
 
 ### Iso-Seq
 
-IsONclust works with full-lengh non-chimeric (flnc) reads that has quality values assigned to bases. If you already have such a fastq file generated for your reads, isONclust can be run as 
+IsONclust works with full-lengh non-chimeric (_flnc_) reads that has quality values assigned to bases. The flnc reads with quality values can be generated as follows:
+
+1. Make sure quality values is output when running the circular consensus calling step (CCS), by running `ccs` with the parameter `--polish`.
+2. Run PacBio's Iso-Seq pipeline step 2 and 3 (primer removal and extraction of flnc reads) [isoseq3](https://github.com/PacificBiosciences/IsoSeq3/blob/master/README_v3.1.md).  
+
+Flnc reads can be submitted as either a fastq file or bam file. A fastq file is created from a BAM by running _e.g_ `bamtools convert -format fastq -in flnc.bam -out flnc.fastq`. isONclust is called as follows
 
 ```
 isONclust pipeline --isoseq --fastq <reads.fastq> --outfolder </path/to/output> 
 ```
 
-If not, flnc reads can be generated as follows. Raw pacbio subreads needs to be proccesed with `ccs` with the command `--polish` (to get quality values), followed by `lima`, and `isoseq3 cluster` to get the flnc reads. The flnc file is generated at the very beginning of the `isoseq3 cluster` algorithm and it can be used once its created (no need to wait for isoseq3 to finish). See full documentation on generating flnc reads at [isoseq3](https://github.com/PacificBiosciences/IsoSeq3). After these three comands are run isONclust can be run as follows
+isONclust also supports older versions of the isoseq3 pipeline by taking the `ccs.bam` file together with the `flnc.bam`. In this case, isONclust can be run as follows. 
+
+<!--- If not, flnc reads can be generated as follows. Raw pacbio subreads needs to be proccesed with `ccs` with the command `--polish` (to get quality values), followed by `lima`, and `isoseq3 cluster` to get the flnc reads. The flnc file is generated at the very beginning of the `isoseq3 cluster` algorithm and it can be used once its created (no need to wait for isoseq3 to finish). See full documentation on generating flnc reads at [isoseq3](https://github.com/PacificBiosciences/IsoSeq3). After these three comands are run isONclust can be run as follows -->
 ```
 isONclust --isoseq --ccs <ccs.bam> --flnc <flnc.bam> --outfolder </path/to/output> 
 ```
@@ -120,7 +127,7 @@ The argument `--ont` simply means `--k 13 --w 20`. These arguments can be set ma
 
 #### Output
 
-The output consists of a tsv file with the first column being the cluster ID, and the second column being the read accession, as follows
+The output consists of a tsv file `final_clusters.tsv` present in the specified output folder. In this file, the first column is the cluster ID and the second column is the read accession. For example:
 ```
 0 read_X_acc
 0 read_Y_acc
