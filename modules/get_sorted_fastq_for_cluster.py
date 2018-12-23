@@ -147,7 +147,7 @@ def main(args):
         print("Environment set:", mp.get_context())
         print("Using {0} cores.".format(args.nr_cores))
         start_multi = time()
-        pool = Pool(processes=int(args.nr_cores - 1))
+        pool = Pool(processes=int(args.nr_cores))
         try:
             print([len(b) for b in read_batches])
             res = pool.map_async(calc_score, [(b,k) for b in read_batches])
