@@ -135,7 +135,7 @@ def main(args):
 
         reads = [ (acc,seq, qual) for acc, (seq, qual) in readfq(open(args.fastq, 'r'))]
         start = time()
-        read_chunk_size = int(len(reads)/(args.nr_cores -1)) + 1
+        read_chunk_size = int( len(reads)/args.nr_cores ) + 1
         read_batches = [b for b in batch(reads, read_chunk_size)]
         del reads
         ####### parallelize alignment #########
