@@ -90,8 +90,12 @@ def main(args):
     # nonclustered_outfile = open(os.path.join(reads_outfolder, "non_clustered.fa"), "w")
 
     outfile = open(os.path.join(args.outfolder,  "final_clusters.csv"), "w")
+    origins_outfile = open(os.path.join(args.outfolder,  "final_cluster_origins.csv"), "w")
     nontrivial_cluster_index = 0
     for c_id, all_read_acc in sorted(clusters.items(), key = lambda x: len(x[1]), reverse=True):
+        read_cl_id, b_i, acc, c_seq, c_qual, score, error_rate = cluster_seq_origin[c_id]
+        origins_outfile.write("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\n".format(read_cl_id, "_".join([item for item in acc.split("_")[:-1]]), c_seq, c_qual, score, error_rate))
+
         for r_acc in all_read_acc:
             outfile.write("{0}\t{1}\n".format(c_id, "_".join([item for item in r_acc.split("_")[:-1]]) ))
         if len(all_read_acc) > 1:
@@ -99,12 +103,55 @@ def main(args):
     print("Nr clusters larger than 1:", nontrivial_cluster_index) #, "Non-clustered reads:", len(archived_reads))
     print("Nr clusters (all):", len(clusters)) #, "Non-clustered reads:", len(archived_reads))
 
+    outfile.close()
+    origins_outfile.close()
 
-    origins_outfile = open(os.path.join(args.outfolder,  "final_cluster_origins.csv"), "w")
-    for cl_id, all_read_acc in sorted(clusters.items(), key = lambda x: len(x[1]), reverse=True):
-        read_cl_id, b_i, acc, c_seq, c_qual, score, error_rate = cluster_seq_origin[cl_id]
-        origins_outfile.write("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\n".format(read_cl_id, acc, c_seq, c_qual, score, error_rate))
+    # for cl_id, all_read_acc in sorted(clusters.items(), key = lambda x: len(x[1]), reverse=True):
 
+
+def write_fastq(args):
+    from collections import defaultdict
+    clusters = defaultdict(list)
+
+    with open(args.clusters) as f:
+        for line in f:
+            items = line.strip().split()
+            cl_id, acc = items[0], items[1]
+            clusters[cl_id].append(acc)
+
+    mkdir_p(args.outfolder)
+    reads = { acc : (seq, qual) for acc, (seq, qual) in readfq(open(args.fastq, 'r'))}
+    
+    for cl_id in clusters:
+        r = clusters[cl_id]
+
+        if len(r) >= args.N:
+            curr_file = open(os.path.join(args.outfolder, str(cl_id) + ".fastq" ), "w")
+            for acc in r:
+                seq, qual = reads[acc]
+                curr_file.write("@{0}\n{1}\n{2}\n{3}\n".format(acc, seq, "+", qual))
+            curr_file.close()
+
+
+
+    # curr_id = -1
+    # for i, cl_id, acc in enumerate(open(args.clusters, "r")): 
+    #     if i == 0:
+    #         curr_file = open(os.path.join(args.outfolder, str(cl_id) + ".fastq" ), "w")
+    #         seq, qual = reads[acc]
+    #         curr_file.write("{0}\n{1}\n{2}\n{3}\n".format(acc, seq, "+", qual))
+
+    #     elif curr_id != cl_id: # new cluster
+    #         curr_file.close()
+    #         curr_file = open(os.path.join(args.outfolder, str(cl_id) + ".fastq" ), "w")
+    #         seq, qual = reads[acc]
+    #         curr_file.write("{0}\n{1}\n{2}\n{3}\n".format(acc, seq, "+", qual))
+
+    #     else: # same as before
+    #         seq, qual = reads[acc]
+    #         curr_file.write("{0}\n{1}\n{2}\n{3}\n".format(acc, seq, "+", qual))
+
+    #     curr_id = cl_id
 
 
 
@@ -130,8 +177,23 @@ if __name__ == '__main__':
     parser.add_argument('--min_prob_no_hits', type=float, default=0.1, help='Minimum probability for i consecutive minimizers to be different between read and representative and still considered as mapped region, under assumption that they come from the same transcript (depends on read quality).')
     parser.add_argument('--outfolder', type=str,  default=None, help='A fasta file with transcripts that are shared between samples and have perfect illumina support.')
     # parser.add_argument('--pickled_subreads', type=str, help='Path to an already parsed subreads file in pickle format')
-    
+    parser.set_defaults(which='main')
+
+    subparsers = parser.add_subparsers(help='sub-command help')
+    write_fastq_parser = subparsers.add_parser('write_fastq', help='a help')
+    write_fastq_parser.add_argument('--clusters', type=str, help='the file "final_clusters.tsv created by isONclust."')
+    write_fastq_parser.add_argument('--fastq', type=str, help='Input fastq file')
+    write_fastq_parser.add_argument('--outfolder', type=str, help='Output folder')
+    write_fastq_parser.add_argument('--N', type=int, default = 0, help='Write out clusters with more or equal than N reads')
+    # parser.add_argument('--write_fastq_clusters', default = None, help=' --write_fastq_clusters <N>. Write out clusters with more or equal than N >= 1.')
+    write_fastq_parser.set_defaults(which='write_fastq')
+
     args = parser.parse_args()
+
+    if args.which == 'write_fastq':
+        write_fastq(args)
+        print("Wrote clusters to separate fastq files.")
+        sys.exit(0)
 
     if (args.fastq and (args.flnc or args.ccs)):
         print("Either (1) only a fastq file, or (2) a ccs and a flnc file should be specified. ")

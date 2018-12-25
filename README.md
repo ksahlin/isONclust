@@ -125,7 +125,7 @@ IsoCon pipeline --ont --fastq <reads.fastq> --outfolder </path/to/output>
 ```
 The argument `--ont` simply means `--k 13 --w 20`. These arguments can be set manually without the `--ont` flag. Specify number of cores with `--t`. 
 
-#### Output
+## Output
 
 The output consists of a tsv file `final_clusters.tsv` present in the specified output folder. In this file, the first column is the cluster ID and the second column is the read accession. For example:
 ```
@@ -134,7 +134,10 @@ The output consists of a tsv file `final_clusters.tsv` present in the specified 
 ...
 n read_Z_acc
 ```
-if there are n reads there will be n rows. Some reads might be singletons. The rows are ordered with respect to the size of the cluster (largest first).
+if there are n reads there will be n rows. Some reads might be singletons. The rows are ordered with respect to the size of the cluster (largest first). isONclust can also print separate fastq files for each cluster with more than N reads (N a parameter to the program). After clustering, simply run
+```
+isONclust write_fastq --fastq <reads.fastq> --clusters <path/to/final_clusters.tsv> --outfolder </path/to/output>  --N [int]
+```
 
 
 
