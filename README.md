@@ -134,11 +134,13 @@ The output consists of a tsv file `final_clusters.tsv` present in the specified 
 ...
 n read_Z_acc
 ```
-if there are n reads there will be n rows. Some reads might be singletons. The rows are ordered with respect to the size of the cluster (largest first). isONclust can also print separate fastq files for each cluster with more than N reads (N a parameter to the program). After clustering, simply run
-```
-isONclust write_fastq --fastq <reads.fastq> --clusters <path/to/final_clusters.tsv> --outfolder </path/to/output>  --N [int]
-```
+if there are n reads there will be n rows. Some reads might be singletons. The rows are ordered with respect to the size of the cluster (largest first). 
 
+isONclust can also print separate fastq files for each cluster with more than N reads (N is a parameter to the program). After clustering, simply run
+```
+isONclust write_fastq --N [int] --fastq <reads.fastq> --clusters <path/to/final_clusters.tsv> --outfolder </path/to/output>
+```
+This will print out separate fastq files in `</path/to/output>` for all clusters with more than `[int]` reads. The names of the files are the cluster IDs assigned by isONclust, and matches the ID's found in the `final_clusters.tsv` file.
 
 
 ### Parameters
