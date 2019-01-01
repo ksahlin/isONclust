@@ -762,8 +762,44 @@ def parallel_clustering(read_array, p_emp_probs, args):
         del all_H
 
 
+def single_clustering(read_array, p_emp_probs, args):
+
+    num_batches = args.nr_cores 
+    # prev_nr_repr = len(read_array)
+    start_cluster = time()
+    read_batches = [batch for batch in batch_list(read_array, num_batches, batch_type = "weighted" )]
+    print("Using total nucleotide batch sizes:", [sum([len(seq) for i, b_i, acc, seq, qual, score in b]) for b in read_batches] )
+    print("Using nr reads batch sizes:", [len(b)  for b in read_batches] )
+    cluster_batches = []
+    cluster_seq_origin_batches = []
+    lowest_batch_index_db = []
+    for batch in read_batches:
+        tmp_clust = {}
+        tmp_clust_origin = {}
+        for i, b_i, acc, seq, qual, score in batch:
+            tmp_clust[i] = [acc]
+            tmp_clust_origin[i] = (i, b_i, acc, seq, qual, score)
+        cluster_batches.append(tmp_clust)
+        cluster_seq_origin_batches.append(tmp_clust_origin)
+        lowest_batch_index_db.append({})
+    del read_array
+
+    print("Using 1 batch.")
+
+    data2 = {i+1 :((cluster_batches[0], cluster_seq_origin_batches[0], read_batches[0], p_emp_probs, lowest_batch_index_db[0], 1, args), {})} 
+    result = reads_to_clusters_helper2(data2) # { new_batch_index : (Cluster, cluster_seq_origin, H, new_batch_index)}
+    Cluster, cluster_seq_origin, H, new_batch_index = result[1]
+
+    print("Time elapesd clustering:", time() - start_cluster)
+    return Cluster, cluster_seq_origin
+
+
 def cluster_seqs(read_array, p_emp_probs, args):
-    all_clusters, all_representatives = parallel_clustering(read_array, p_emp_probs, args)
+    if args.nr_cores > 1:
+        all_clusters, all_representatives = parallel_clustering(read_array, p_emp_probs, args)
+    else:
+        all_clusters, all_representatives = single_clustering(read_array, p_emp_probs, args)
+
     return all_clusters, all_representatives
 
 
