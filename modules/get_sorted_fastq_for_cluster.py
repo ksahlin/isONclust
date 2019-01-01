@@ -15,6 +15,13 @@ from time import time
 
 from collections import deque
 
+import pickle
+import sys
+# from collections import OrderedDict
+
+def get_pickled_memory(data):
+    return sum(sys.getsizeof(pickle.dumps(d)) for d in data)
+
 # def get_kmer_quals(qual, k):
 #     return [ qual[i : i + k] for i in range(len(qual) - k +1)]
 
@@ -106,8 +113,10 @@ def batch(iterable, n=1):
         yield iterable[ndx:min(ndx + n, l)]
 
 
-def calc_score(tup):
-    l, k = tup
+def calc_score_new(d):
+    for key,value in d.items():
+        l, k = value
+
     read_array = []
     error_rates = []
     for i, (acc, seq, qual) in enumerate(l):
@@ -121,6 +130,23 @@ def calc_score(tup):
         score =  p_no_error_in_kmers  * (len(seq) - k +1)
         read_array.append((acc, seq, qual, score) )
     return read_array, error_rates
+
+
+# def calc_score(tup):
+#     l, k = tup
+#     read_array = []
+#     error_rates = []
+#     for i, (acc, seq, qual) in enumerate(l):
+#         if i % 10000 == 0:
+#             print(i, "reads processed.")
+#         poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
+#         error_rate = poisson_mean/float(len(qual))
+#         error_rates.append(error_rate)
+#         exp_errors_in_kmers = expected_number_of_erroneous_kmers_speed(qual, k)
+#         p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
+#         score =  p_no_error_in_kmers  * (len(seq) - k +1)
+#         read_array.append((acc, seq, qual, score) )
+#     return read_array, error_rates
 
 def main(args):
     start = time()
@@ -150,7 +176,14 @@ def main(args):
         pool = Pool(processes=int(args.nr_cores))
         try:
             print([len(b) for b in read_batches])
-            res = pool.map_async(calc_score, [(b,k) for b in read_batches])
+
+            # data1 = [(b,k) for b in read_batches]
+            data2 = [ {i : (b,k)} for i, b in enumerate(read_batches)] #[ {i+1 :((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, lowest_batch_index_db[i], i+1, args), {})} for i in range(len(read_batches))]
+            # print("Size:{0}Mb".format( [round( get_pickled_memory(d)/float(1000000), 2) for d in data1 ] ))
+            # print("Size:{0}Mb".format( [round( get_pickled_memory(d)/float(1000000), 2) for d in data2 ] ))
+
+            # res = pool.map_async(calc_score, [(b,k) for b in read_batches])
+            res = pool.map_async(calc_score_new, data2)
             score_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
         except KeyboardInterrupt:
             print("Caught KeyboardInterrupt, terminating workers")
