@@ -673,6 +673,16 @@ def parallel_clustering(read_array, p_emp_probs, args):
         print("ITERATION", it)
         print("Using {0} batches.".format(num_batches))
 
+        if len(read_batches) == 1:
+            start_cluster = time()
+
+            data2 = {i+1 :((cluster_batches[0], cluster_seq_origin_batches[0], read_batches[0], p_emp_probs, lowest_batch_index_db[0], 1, args), {})} 
+            result = reads_to_clusters_helper2(data2) # { new_batch_index : (Cluster, cluster_seq_origin, H, new_batch_index)}
+            Cluster, cluster_seq_origin, H, new_batch_index = result[1]
+            print("Time elapesd clustering last iteration single core:", time() - start_cluster)
+            return Cluster, cluster_seq_origin
+
+
         start_multi = time()
         pool = Pool(processes=int(num_batches))
         try:
