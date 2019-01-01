@@ -129,7 +129,7 @@ def calc_score_new(d):
         p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
         score =  p_no_error_in_kmers  * (len(seq) - k +1)
         read_array.append((acc, seq, qual, score) )
-    return read_array, error_rates
+    return {key : (read_array, error_rates)}
 
 
 # def calc_score(tup):
@@ -195,11 +195,22 @@ def main(args):
 
         print("Time elapesd multiprocessing:", time() - start_multi)
         read_array, error_rates = [], []
-        for r_a, err_rates in score_results:
-            for item in r_a:
-                read_array.append(item)
-            for item2 in err_rates:
-                error_rates.append(item2)
+
+        for output_dict in score_results:
+            for k, v in output_dict.items():
+                r_a, err_rates = v
+                print("Batch index", k)
+                for item in r_a:
+                    read_array.append(item)
+                for item2 in err_rates:
+                    error_rates.append(item2)
+
+
+        # for r_a, err_rates in score_results:
+        #     for item in r_a:
+        #         read_array.append(item)
+        #     for item2 in err_rates:
+        #         error_rates.append(item2)
         # read_array = [item for r_a, err_rates in score_results for item in r_a]
         read_array.sort(key=lambda x: x[3], reverse=True)
         error_rates.sort()
