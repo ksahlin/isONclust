@@ -158,86 +158,84 @@ def main(args):
         return args.outfile
 
     elif args.fastq:
+        if args.nr_cores > 1: 
+            reads = [ (acc,seq, qual) for acc, (seq, qual) in readfq(open(args.fastq, 'r'))]
+            start = time()
+            read_chunk_size = int( len(reads)/args.nr_cores ) + 1
+            read_batches = [b for b in batch(reads, read_chunk_size)]
+            del reads
+            ####### parallelize alignment #########
+            # pool = Pool(processes=mp.cpu_count())
+            original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGINT, original_sigint_handler)
+            mp.set_start_method('spawn')
+            print(mp.get_context())
+            print("Environment set:", mp.get_context())
+            print("Using {0} cores.".format(args.nr_cores))
+            start_multi = time()
+            pool = Pool(processes=int(args.nr_cores))
+            try:
+                print([len(b) for b in read_batches])
 
-        reads = [ (acc,seq, qual) for acc, (seq, qual) in readfq(open(args.fastq, 'r'))]
-        start = time()
-        read_chunk_size = int( len(reads)/args.nr_cores ) + 1
-        read_batches = [b for b in batch(reads, read_chunk_size)]
-        del reads
-        ####### parallelize alignment #########
-        # pool = Pool(processes=mp.cpu_count())
-        original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
-        signal.signal(signal.SIGINT, original_sigint_handler)
-        mp.set_start_method('spawn')
-        print(mp.get_context())
-        print("Environment set:", mp.get_context())
-        print("Using {0} cores.".format(args.nr_cores))
-        start_multi = time()
-        pool = Pool(processes=int(args.nr_cores))
-        try:
-            print([len(b) for b in read_batches])
+                # data1 = [(b,k) for b in read_batches]
+                data2 = [ {i : (b,k)} for i, b in enumerate(read_batches)] #[ {i+1 :((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, lowest_batch_index_db[i], i+1, args), {})} for i in range(len(read_batches))]
+                # print("Size:{0}Mb".format( [round( get_pickled_memory(d)/float(1000000), 2) for d in data1 ] ))
+                # print("Size:{0}Mb".format( [round( get_pickled_memory(d)/float(1000000), 2) for d in data2 ] ))
 
-            # data1 = [(b,k) for b in read_batches]
-            data2 = [ {i : (b,k)} for i, b in enumerate(read_batches)] #[ {i+1 :((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, lowest_batch_index_db[i], i+1, args), {})} for i in range(len(read_batches))]
-            # print("Size:{0}Mb".format( [round( get_pickled_memory(d)/float(1000000), 2) for d in data1 ] ))
-            # print("Size:{0}Mb".format( [round( get_pickled_memory(d)/float(1000000), 2) for d in data2 ] ))
+                # res = pool.map_async(calc_score, [(b,k) for b in read_batches])
+                res = pool.map_async(calc_score_new, data2)
+                score_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
+            except KeyboardInterrupt:
+                print("Caught KeyboardInterrupt, terminating workers")
+                pool.terminate()
+                sys.exit()
+            else:
+                pool.close()
+            pool.join()
 
-            # res = pool.map_async(calc_score, [(b,k) for b in read_batches])
-            res = pool.map_async(calc_score_new, data2)
-            score_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
-        except KeyboardInterrupt:
-            print("Caught KeyboardInterrupt, terminating workers")
-            pool.terminate()
-            sys.exit()
+            print("Time elapesd multiprocessing:", time() - start_multi)
+            read_array, error_rates = [], []
+
+            for output_dict in score_results:
+                for k, v in output_dict.items():
+                    r_a, err_rates = v
+                    print("Batch index", k)
+                    for item in r_a:
+                        read_array.append(item)
+                    for item2 in err_rates:
+                        error_rates.append(item2)
+
+
+            # for r_a, err_rates in score_results:
+            #     for item in r_a:
+            #         read_array.append(item)
+            #     for item2 in err_rates:
+            #         error_rates.append(item2)
+            # read_array = [item for r_a, err_rates in score_results for item in r_a]
+            read_array.sort(key=lambda x: x[3], reverse=True)
+            error_rates.sort()
+
         else:
-            pool.close()
-        pool.join()
+            read_array = []
+            for i, (acc, (seq, qual)) in enumerate(readfq(open(args.fastq, 'r'))):
+                if i % 10000 == 0:
+                    print(i, "reads processed.")
+                
+                poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
+                error_rate = poisson_mean/float(len(qual))
+                error_rates.append(error_rate)
+                exp_errors_in_kmers = expected_number_of_erroneous_kmers_speed(qual, k)
+                p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
+                score =  p_no_error_in_kmers  * (len(seq) - k +1)
+                # print("Exact speed:", p_no_error_in_kmers, score, exp_errors_in_kmers)
 
-        print("Time elapesd multiprocessing:", time() - start_multi)
-        read_array, error_rates = [], []
-
-        for output_dict in score_results:
-            for k, v in output_dict.items():
-                r_a, err_rates = v
-                print("Batch index", k)
-                for item in r_a:
-                    read_array.append(item)
-                for item2 in err_rates:
-                    error_rates.append(item2)
-
-
-        # for r_a, err_rates in score_results:
-        #     for item in r_a:
-        #         read_array.append(item)
-        #     for item2 in err_rates:
-        #         error_rates.append(item2)
-        # read_array = [item for r_a, err_rates in score_results for item in r_a]
-        read_array.sort(key=lambda x: x[3], reverse=True)
-        error_rates.sort()
-
-
-
-        # read_array = []
-        # for i, (acc, (seq, qual)) in enumerate(readfq(open(args.fastq, 'r'))):
-        #     if i % 10000 == 0:
-        #         print(i, "reads processed.")
+                # print(sum(p_no_error_in_kmers)/float(len(p_no_error_in_kmers)), p_no_error_in_kmers_appr, qual)
+                read_array.append((acc, seq, qual, score) )
             
-
-        #     poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
-        #     error_rate = poisson_mean/float(len(qual))
-        #     error_rates.append(error_rate)
-        #     exp_errors_in_kmers = expected_number_of_erroneous_kmers_speed(qual, k)
-        #     p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
-        #     score =  p_no_error_in_kmers  * (len(seq) - k +1)
-        #     # print("Exact speed:", p_no_error_in_kmers, score, exp_errors_in_kmers)
-
-        #     # print(sum(p_no_error_in_kmers)/float(len(p_no_error_in_kmers)), p_no_error_in_kmers_appr, qual)
-        #     read_array.append((acc, seq, qual, score) )
-        
-        # read_array.sort(key=lambda x: x[3], reverse=True)
-        # print(read_array == read_array_new)
-        # print(len(read_array), len(read_array_new))
-        # print([a[0] for a in read_array] == [a[0] for a in read_array_new])
+            read_array.sort(key=lambda x: x[3], reverse=True)
+            # print(read_array == read_array_new)
+            # print(len(read_array), len(read_array_new))
+            # print([a[0] for a in read_array] == [a[0] for a in read_array_new])
 
         reads_sorted_outfile = open(args.outfile, "w")
         for i, (acc, seq, qual, score) in enumerate(read_array):
