@@ -127,6 +127,8 @@ The argument `--ont` simply means `--k 13 --w 20`. These arguments can be set ma
 
 ## Output
 
+### TSV
+
 The output consists of a tsv file `final_clusters.tsv` present in the specified output folder. In this file, the first column is the cluster ID and the second column is the read accession. For example:
 ```
 0 read_X_acc
@@ -135,6 +137,8 @@ The output consists of a tsv file `final_clusters.tsv` present in the specified 
 n read_Z_acc
 ```
 if there are n reads there will be n rows. Some reads might be singletons. The rows are ordered with respect to the size of the cluster (largest first). 
+
+### Fastq
 
 isONclust can also print separate fastq files for each cluster with more than N reads (N is a parameter to the program). After clustering, simply run
 ```

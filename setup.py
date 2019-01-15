@@ -19,7 +19,7 @@ with open(path.join(here, 'README.md'), encoding='utf-8') as f:
 setup(
 
     name='isONclust',  # Required
-    version='0.0.2',  # Required
+    version='0.0.3',  # Required
     description='De novo clustering of long-read transcriptome reads.',  # Required
     long_description=long_description,  # Optional
     url='https://github.com/ksahlin/isONclust',  # Optional
