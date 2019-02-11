@@ -175,7 +175,7 @@ def get_best_cluster(read_cl_id, compressed_seq_len, hit_clusters_ids, hit_clust
                 if nm_hits < args.min_fraction * top_hits or nm_hits < args.min_shared:
                     break
 
-                cl_size = len(hit_clusters_ids)
+                # cl_size = len(hit_clusters_ids)
                 minimizer_hit_positions = hit_clusters_hit_positions[cl_id]
                 minimizer_hit_indices = hit_clusters_hit_index[cl_id]
                 assert len(minimizer_hit_indices) == len(minimizer_hit_positions)
@@ -184,7 +184,7 @@ def get_best_cluster(read_cl_id, compressed_seq_len, hit_clusters_ids, hit_clust
                 p_error_in_kmers_emp =  1.0 - p_shared_minimizer_empirical(error_rate_read, error_rate_c, p_emp_probs)
                 minimizer_error_probabilities = [p_error_in_kmers_emp]*nummber_of_minimizers
                 total_mapped = 0
-                prev_mpos = 0
+                # prev_mpos = 0
                 prob_all_errors_since_last_hit = [reduce(mul, minimizer_error_probabilities[: minimizer_hit_indices[0]], 1)] +  [ reduce(mul, minimizer_error_probabilities[hit_idx1+1: hit_idx2], 1) for hit_idx1, hit_idx2 in zip(minimizer_hit_indices[:-1], minimizer_hit_indices[1:]) ] + [reduce(mul, minimizer_error_probabilities[minimizer_hit_indices[-1]+1 : ], 1)]
 
                 assert len(prob_all_errors_since_last_hit) == len(minimizer_hit_positions) + 1
@@ -204,13 +204,13 @@ def get_best_cluster(read_cl_id, compressed_seq_len, hit_clusters_ids, hit_clust
                 mapped_ratio = total_mapped /float(compressed_seq_len) 
                 
                 if mapped_ratio > args.mapped_threshold:
-                    is_covered = True
+                    # is_covered = True
                     return cl_id, nm_hits, mapped_ratio
 
     return  best_cluster_id, nr_shared_kmers, mapped_ratio 
 
 
-def parasail_block_alignment(s1, s2, k, match_id, x_acc = "", y_acc = "", match_score = 2, mismatch_penalty = -2, opening_penalty = 5, gap_ext = 1, ends_discrepancy_threshold = 0):
+def parasail_block_alignment(s1, s2, k, match_id, match_score = 2, mismatch_penalty = -2, opening_penalty = 5, gap_ext = 1):
     user_matrix = parasail.matrix_create("ACGT", match_score, mismatch_penalty)
     result = parasail.sg_trace_scan_16(s1, s2, opening_penalty, gap_ext, user_matrix)
     if result.saturated:
@@ -260,19 +260,12 @@ def get_best_cluster_block_align(read_cl_id, representatives, hit_clusters_ids, 
     _, _, _, seq, r_qual, _, _ = representatives[read_cl_id]
     # print(top_matches)
     top_hits = top_matches[0][1]
-    aln_counter = 0
     alignment_ratio = 0.0
     for tm in top_matches:
         cl_id = tm[0]
         nm_hits = tm[1]
-        # if cl_id not in representatives:
-        #     # print("GGAGGAGAGGAAGAG2222")
-        #     # return  -1, 0,  -1, -1, -1, alignment_ratio
-        #     continue
-
         if nm_hits < top_hits:
             break
-        aln_counter +=1
         _, _, _, c_seq, c_qual, _, _ = representatives[cl_id]
 
         poisson_mean = sum([ r_qual.count(char_) * phred_char_to_p[char_] for char_ in set(r_qual)])

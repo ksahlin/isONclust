@@ -70,3 +70,66 @@ def get_pickled_memory(data):
 
 
 
+
+def next_power_of_2(x):  
+    return 1 if x == 0 else 2**(x - 1).bit_length()
+
+
+def merge_two_dicts(x, y):
+    z = x.copy()   # start with x's keys and values
+    z.update(y)    # modifies z with y's keys and values & returns None
+    return z
+
+
+
+#### FROM GET_SORTED_FASTQ_FOR_CLUSTER
+
+# from collections import OrderedDict
+
+
+# def get_kmer_quals(qual, k):
+#     return [ qual[i : i + k] for i in range(len(qual) - k +1)]
+
+# def expected_number_of_erroneous_kmers(kmer_quals):
+#     sum_of_expectations = 0
+#     for kmer in kmer_quals:
+#         p_not_error = 1.0 
+#         for char_ in set(kmer):
+#             p_not_error *= (1 - 10**( - (ord(char_) - 33)/10.0 ))**kmer.count(char_)
+#         sum_of_expectations += p_not_error
+
+#     return len(kmer_quals) - sum_of_expectations 
+
+# def get_p_no_error_in_kmers_approximate(qual_string, k):
+#     poisson_mean = sum([ qual_string.count(char_) * 10**( - (ord(char_) - 33)/10.0 ) for char_ in set(qual_string)])
+#     error_rate = poisson_mean/float(len(qual_string))
+#     return (1.0 - error_rate)**k #1.0 - min(error_rate * k, 1.0)
+
+# def get_p_error_in_kmer(qual_string, k):
+#     poisson_mean = sum([ qual_string.count(char_) * 10**( - (ord(char_) - 33)/10.0 ) for char_ in set(qual_string)])
+#     error_rate = poisson_mean/float(len(qual_string))
+#     p_error_in_kmer = 1.0 - (1.0 - error_rate)**k
+#     return p_error_in_kmer
+
+
+
+# def calc_score(tup):
+#     l, k = tup
+#     read_array = []
+#     error_rates = []
+#     for i, (acc, seq, qual) in enumerate(l):
+#         if i % 10000 == 0:
+#             print(i, "reads processed.")
+#         poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
+#         error_rate = poisson_mean/float(len(qual))
+#         error_rates.append(error_rate)
+#         exp_errors_in_kmers = expected_number_of_erroneous_kmers_speed(qual, k)
+#         p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
+#         score =  p_no_error_in_kmers  * (len(seq) - k +1)
+#         read_array.append((acc, seq, qual, score) )
+#     return read_array, error_rates
+
+
+
+
+

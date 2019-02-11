@@ -38,8 +38,6 @@ def readfq(fp): # this is a generator function
                 break
 
 
-
-
 def mkdir_p(path):
     try:
         os.makedirs(path)

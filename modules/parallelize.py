@@ -16,11 +16,6 @@ def reads_to_clusters_helper(arguments):
         args, kwargs = v
     return cluster.reads_to_clusters(*args, **kwargs)
 
-def merge_two_dicts(x, y):
-    z = x.copy()   # start with x's keys and values
-    z.update(y)    # modifies z with y's keys and values & returns None
-    return z
-
 
 def merge_dicts(*dict_args):
     """
@@ -31,10 +26,6 @@ def merge_dicts(*dict_args):
     for dictionary in dict_args:
         result.update(dictionary)
     return result
-
-
-def next_power_of_2(x):  
-    return 1 if x == 0 else 2**(x - 1).bit_length()
 
 
 def batch_list(lst, nr_cores=1, batch_type = "nr_reads" , merge_consecutive = False ):
@@ -151,7 +142,7 @@ def parallel_clustering(read_array, p_emp_probs, args):
 
             data = {i+1 :((cluster_batches[0], cluster_seq_origin_batches[0], read_batches[0], p_emp_probs, lowest_batch_index_db[0], 1, args), {})} 
             result = reads_to_clusters_helper(data) # { new_batch_index : (Cluster, cluster_seq_origin, H, new_batch_index)}
-            Cluster, cluster_seq_origin, H, new_batch_index = result[1]
+            Cluster, cluster_seq_origin, _, _ = result[1]
             print("Time elapesd clustering last iteration single core:", time() - start_cluster)
             return Cluster, cluster_seq_origin
 
@@ -180,12 +171,12 @@ def parallel_clustering(read_array, p_emp_probs, args):
         for output_dict in cluster_results:
             print("New batch")
             for k, v in output_dict.items():
-                new_clusters, new_cluster_origins, H_new, batch_index = v
+                new_clusters, new_representatives, minimizer_database_new, batch_index = v
                 print("Batch index", k)
-            # for new_clusters, new_cluster_origins, H_new, batch_index in cluster_results: 
+            # for new_clusters, new_representatives, minimizer_database_new, batch_index in cluster_results: 
                 all_cl.append(new_clusters)
-                all_repr.append(new_cluster_origins)
-                all_minimizer_databases[batch_index] =  H_new
+                all_repr.append(new_representatives)
+                all_minimizer_databases[batch_index] =  minimizer_database_new
 
         all_clusters = merge_dicts(*all_cl)
         all_representatives = merge_dicts(*all_repr)
