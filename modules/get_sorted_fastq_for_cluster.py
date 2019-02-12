@@ -19,7 +19,7 @@ from modules import help_functions
 D = {chr(i) : min( 10**( - (ord(chr(i)) - 33)/10.0 ), 0.5)  for i in range(128)}
 D_no_min = {chr(i) : 10**( - (ord(chr(i)) - 33)/10.0 )  for i in range(128)}
 
-def expected_number_of_erroneous_kmers_speed(quality_string, k):
+def expected_number_of_erroneous_kmers(quality_string, k):
     prob_error = [D[char_] for char_ in quality_string]
     window = deque([ (1.0 - p_e) for p_e in prob_error[:k]])
     # print(window)
@@ -60,7 +60,7 @@ def calc_score_new(d):
         poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
         error_rate = poisson_mean/float(len(qual))
         error_rates.append(error_rate)
-        exp_errors_in_kmers = expected_number_of_erroneous_kmers_speed(qual, k)
+        exp_errors_in_kmers = expected_number_of_erroneous_kmers(qual, k)
         p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
         score =  p_no_error_in_kmers  * (len(seq) - k +1)
         read_array.append((acc, seq, qual, score) )
@@ -122,14 +122,18 @@ def fastq_single_core(args):
     for i, (acc, (seq, qual)) in enumerate(help_functions.readfq(open(args.fastq, 'r'))):
         if i % 10000 == 0:
             print(i, "reads processed.")
-        
-        poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
-        error_rate = poisson_mean/float(len(qual))
-        error_rates.append(error_rate)
-        exp_errors_in_kmers = expected_number_of_erroneous_kmers_speed(qual, k)
+                
+        exp_errors_in_kmers = expected_number_of_erroneous_kmers(qual, k)
         p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
         score =  p_no_error_in_kmers  * (len(seq) - k +1)
         read_array.append((acc, seq, qual, score) )
+        
+        ## For (inferred) average error rate only, based on quality values
+        ### These values are used in evaluations in the paper only, and are not used in clustering
+        poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
+        error_rate = poisson_mean/float(len(qual))
+        error_rates.append(error_rate)
+        ##############################################
     
     read_array.sort(key=lambda x: x[3], reverse=True)
     return read_array, error_rates
@@ -176,7 +180,7 @@ def isoseq(args):
             poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
             error_rate = poisson_mean/float(len(qual))
             error_rates.append(error_rate)
-            exp_errors_in_kmers = expected_number_of_erroneous_kmers_speed(qual, k)
+            exp_errors_in_kmers = expected_number_of_erroneous_kmers(qual, k)
             p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
             score =  p_no_error_in_kmers  * (len(seq) - k +1)
 

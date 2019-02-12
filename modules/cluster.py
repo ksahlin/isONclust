@@ -3,8 +3,6 @@ from functools import reduce
 import os,sys
 import argparse
 
-import pickle
-# import pysam
 from collections import defaultdict
 import math
 from collections import deque
@@ -12,49 +10,7 @@ import itertools
 from operator import mul
 import re
 
-
-try:
-    import parasail
-except:
-    pass
-
-
-
-'''
-    Below code taken from https://github.com/lh3/readfq/blob/master/readfq.py
-'''
-
-def readfq(fp): # this is a generator function
-    last = None # this is a buffer keeping the last unprocessed line
-    while True: # mimic closure; is it a bad idea?
-        if not last: # the first record or a record following a fastq
-            for l in fp: # search for the start of the next record
-                if l[0] in '>@': # fasta/q header line
-                    last = l[:-1] # save this line
-                    break
-        if not last: break
-        name, seqs, last = last[1:].replace(" ", "_"), [], None
-        for l in fp: # read the sequence
-            if l[0] in '@+>':
-                last = l[:-1]
-                break
-            seqs.append(l[:-1])
-        if not last or last[0] != '+': # this is a fasta record
-            yield name, (''.join(seqs), None) # yield a fasta record
-            if not last: break
-        else: # this is a fastq record
-            seq, leng, seqs = ''.join(seqs), 0, []
-            for l in fp: # read the quality
-                seqs.append(l[:-1])
-                leng += len(l) - 1
-                if leng >= len(seq): # have read enough quality
-                    last = None
-                    yield name, (seq, ''.join(seqs)); # yield a fastq record
-                    break
-            if last: # reach EOF before reading enough quality
-                yield name, (seq, None) # yield a fasta record instead
-                break
-
+import parasail
 
 def cigar_to_seq(cigar, query, ref):
     cigar_tuples = []
@@ -216,6 +172,8 @@ def parasail_block_alignment(s1, s2, k, match_id, match_score = 2, mismatch_pena
     if result.saturated:
         print("SATURATED!")
         result = parasail.sg_trace_scan_32(s1, s2, opening_penalty, gap_ext, user_matrix)
+    
+    # difference in how to obtain string from parasail between python v2 and v3... 
     if sys.version_info[0] < 3:
         cigar_string = str(result.cigar.decode).decode('utf-8')
     else:
@@ -224,11 +182,7 @@ def parasail_block_alignment(s1, s2, k, match_id, match_score = 2, mismatch_pena
     s1_alignment, s2_alignment = cigar_to_seq(cigar_string, s1, s2)
 
     # Rolling window of matching blocks
-    # k=15
-    # match_id = int(k*0.8)  1.0 - math.ceil(window_fraction)
-    match_vector = [ 1 if n1 == n2 else 0 for n1, n2 in zip(s1_alignment, s2_alignment) ]
-    # print("".join([str(m) for m in match_vector]))
-    
+    match_vector = [ 1 if n1 == n2 else 0 for n1, n2 in zip(s1_alignment, s2_alignment) ]    
     match_window = deque(match_vector[:k]) # initialization
     current_match_count = sum(match_window)
     aligned_region = []
@@ -293,39 +247,43 @@ def get_best_cluster_block_align(read_cl_id, representatives, hit_clusters_ids, 
 def reads_to_clusters(Cluster, representatives, sorted_reads, p_emp_probs, minimizer_database, new_batch_index, args):
     """
         Iterates throughreads in sorted order (w.r.t. score) and:
-            1. homopolymenr compresses the read
+            1. homopolymenr compresses the read and obtain minimizers
             2. Finds the homopolymenr compressed error rate (if not computed in previous pass if more than 1 core specified to the program)
-            3. Finds all the representatives with shared minimizers (in "get_all_hits_new")
+            3. Finds all the representatives with shared minimizers
             4. Finds the best of the hits using mapping approach
             5. If no hit is found in 4. tries to align to representative with th most shared minimizers.
             6. Adds current read to representative, or makes it a new representative of a new cluster.
-                6''. If new representative, and add the minimizers to the miniizer database minimizer_database. 
+            7. If new representative: add the minimizers to the minimizer database
+            8. Assign the actual reads to their new cluster and their new cluster representative (since all reads were initialized as their own representatives to deal with multiprocessing) 
     """
 
+    ## For multiprocessing only
     prev_b_indices = [ prev_batch_index for (read_cl_id, prev_batch_index, acc, seq, qual, score) in sorted_reads ]
     lowest_batch_index = max(1, min(prev_b_indices))
     skip_count = prev_b_indices.count(lowest_batch_index)
     print("Saved: {0} iterations.".format(skip_count) )
-    # print(sorted(prev_b_indices))
-    print("USING w:{0}, k:{1}".format(args.w, args.k))
-    # print("HERE:",len(representatives))
-    phred_char_to_p = {chr(i) : min( 10**( - (ord(chr(i)) - 33)/10.0 ), 0.5)  for i in range(128)} # PHRED encoded quality character to prob of error. Need this locally if multiprocessing
-    cluster_to_new_cluster_id = {}
+    ###################################
+    
     ## logging counters 
     aln_passed_criteria = 0
     mapped_passed_criteria = 0
     aln_called = 0
-    # total_reads = 0
     ###################
+    
+    phred_char_to_p = {chr(i) : min( 10**( - (ord(chr(i)) - 33)/10.0 ), 0.5)  for i in range(128)} # PHRED encoded quality character to prob of error. Need this locally if multiprocessing
+    cluster_to_new_cluster_id = {}
 
     for i, (read_cl_id, prev_batch_index, acc, seq, qual, score) in enumerate(sorted_reads):
 
+        ## This if statement is only active in parallelization code 
+        ## to keep track of already processed reads in previous iteration
         if prev_batch_index == lowest_batch_index:
             lst = list(representatives[read_cl_id])
             lst[1] = new_batch_index
             t = tuple(lst)
             representatives[read_cl_id] =  t # just updated batch index
             continue
+        ##############################################################
         
         ################################################################################
         ############  Just for develop purposes, print some info to std out ############
@@ -342,10 +300,17 @@ def reads_to_clusters(Cluster, representatives, sorted_reads, p_emp_probs, minim
         ################################################################################
         ################################################################################
 
-        # homopolymenr compress read
+        # 1. homopolymenr compress read and obtain minimizers
+
         seq_hpol_comp = ''.join(ch for ch, _ in itertools.groupby(seq))
+        if len(seq_hpol_comp) < args.k:
+            print( "skipping read of length:", len(seq), "homopolymer compressed:", len(seq_hpol_comp), seq)
+            continue 
+        minimizers = get_kmer_minimizers(seq_hpol_comp, args.k, args.w)
         
-        if len(representatives[read_cl_id]) == 7: # we have already computed homopolymenr compressed error rate in previous iteration (if qtclust is called with multiple cores):
+        # 2. Find the homopolymer compressed error rate (else statement is the only one active in single core mode)
+
+        if len(representatives[read_cl_id]) == 7: # we have already computed homopolymenr compressed error rate in previous iteration (if isONclust is called with multiple cores):
             lst = list(representatives[read_cl_id])
             lst[1] = new_batch_index
             t = tuple(lst)
@@ -361,16 +326,19 @@ def reads_to_clusters(Cluster, representatives, sorted_reads, p_emp_probs, minim
             h_pol_compr_error_rate = poisson_mean/float(len(qualcomp))
             representatives[read_cl_id] = (read_cl_id, new_batch_index, acc, seq, qual, score, h_pol_compr_error_rate) # adding homopolymenr compressed error rate to info tuple of cluster origin sequence
         
-        # get minimizers
-        if len(seq_hpol_comp) < args.k:
-            print( "skipping read of length:", len(seq), "homopolymer compressed:", len(seq_hpol_comp), seq)
-            continue
 
+        # 3. Find all the representatives with shared minimizers (this is the time consuming function for noisy and large datasets)
 
-        minimizers = get_kmer_minimizers(seq_hpol_comp, args.k, args.w)
         hit_clusters_ids, hit_clusters_hit_index, hit_clusters_hit_positions = get_all_hits_new(minimizers, minimizer_database, read_cl_id)
+
+        
+        # 4. Finds the best of the hits using mapping approach
+
         best_cluster_id_m, nr_shared_kmers_m, mapped_ratio = get_best_cluster(read_cl_id, len(seq_hpol_comp), hit_clusters_ids, hit_clusters_hit_positions, minimizers, len(minimizers), hit_clusters_hit_index, representatives, p_emp_probs, args)
         
+        
+        # 5. If step 4 is unsuccessfull we try to align the read to the representative(s) with the most shared minimizers.
+
         if best_cluster_id_m >= 0:
             mapped_passed_criteria += 1
 
@@ -384,10 +352,13 @@ def reads_to_clusters(Cluster, representatives, sorted_reads, p_emp_probs, minim
             best_cluster_id_a = -1
 
 
-        best_cluster_id = max(best_cluster_id_m,best_cluster_id_a)
+        # 6. Adds current read to representative, or makes it a new representative of a new cluster.
         
+        best_cluster_id = max(best_cluster_id_m,best_cluster_id_a)
         if best_cluster_id >= 0:
             cluster_to_new_cluster_id[read_cl_id] = best_cluster_id
+
+        # 7. If new representative: add the minimizers to the minimizer database. 
 
         else :  # Stays in current cluser, adding representative minimixers
             for m, pos in minimizers:
@@ -397,6 +368,8 @@ def reads_to_clusters(Cluster, representatives, sorted_reads, p_emp_probs, minim
                     minimizer_database[m] = set()
                     minimizer_database[m].add(read_cl_id)     
     
+    
+    # 8. Since all reads were initialized as their own representatives we need to reassign reads to their new representative, (this approach was implemented to deal with iterative assigment in the multiprocessing version)
     for read_cl_id in cluster_to_new_cluster_id:
         new_cl_id = cluster_to_new_cluster_id[read_cl_id]
         all_reads = Cluster[read_cl_id]
