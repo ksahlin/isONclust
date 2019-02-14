@@ -1,5 +1,6 @@
 import os
 import errno
+import re
 
 
 '''
@@ -47,3 +48,47 @@ def mkdir_p(path):
             pass
         else:
             raise
+
+
+def cigar_to_seq(cigar, query, ref):
+    cigar_tuples = []
+    result = re.split(r'[=DXSMI]+', cigar)
+    i = 0
+    for length in result[:-1]:
+        i += len(length)
+        type_ = cigar[i]
+        i += 1
+        cigar_tuples.append((int(length), type_ ))
+
+    r_index = 0
+    q_index = 0
+    q_aln = []
+    r_aln = []
+    for length_ , type_ in cigar_tuples:
+        if type_ == "=" or type_ == "X":
+            q_aln.append(query[q_index : q_index + length_])
+            r_aln.append(ref[r_index : r_index + length_])
+
+            r_index += length_
+            q_index += length_
+        
+        elif  type_ == "I":
+            # insertion w.r.t. reference
+            r_aln.append('-' * length_)
+            q_aln.append(query[q_index: q_index + length_])
+            #  only query index change
+            q_index += length_
+
+        elif type_ == 'D':
+            # deletion w.r.t. reference
+            r_aln.append(ref[r_index: r_index + length_])
+            q_aln.append('-' * length_)
+            #  only ref index change
+            r_index += length_
+        
+        else:
+            print("error")
+            print(cigar)
+            sys.exit()
+
+    return  "".join([s for s in q_aln]), "".join([s for s in r_aln])

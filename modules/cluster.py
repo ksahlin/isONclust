@@ -2,7 +2,6 @@ from __future__ import print_function
 from functools import reduce
 import os,sys
 import argparse
-
 from collections import defaultdict
 import math
 from collections import deque
@@ -12,48 +11,7 @@ import re
 
 import parasail
 
-def cigar_to_seq(cigar, query, ref):
-    cigar_tuples = []
-    result = re.split(r'[=DXSMI]+', cigar)
-    i = 0
-    for length in result[:-1]:
-        i += len(length)
-        type_ = cigar[i]
-        i += 1
-        cigar_tuples.append((int(length), type_ ))
-
-    r_index = 0
-    q_index = 0
-    q_aln = []
-    r_aln = []
-    for length_ , type_ in cigar_tuples:
-        if type_ == "=" or type_ == "X":
-            q_aln.append(query[q_index : q_index + length_])
-            r_aln.append(ref[r_index : r_index + length_])
-
-            r_index += length_
-            q_index += length_
-        
-        elif  type_ == "I":
-            # insertion w.r.t. reference
-            r_aln.append('-' * length_)
-            q_aln.append(query[q_index: q_index + length_])
-            #  only query index change
-            q_index += length_
-
-        elif type_ == 'D':
-            # deletion w.r.t. reference
-            r_aln.append(ref[r_index: r_index + length_])
-            q_aln.append('-' * length_)
-            #  only ref index change
-            r_index += length_
-        
-        else:
-            print("error")
-            print(cigar)
-            sys.exit()
-
-    return  "".join([s for s in q_aln]), "".join([s for s in r_aln])
+from modules import help_functions
 
 
 def get_kmer_minimizers(seq, k_size, w_size):
@@ -83,7 +41,7 @@ def get_kmer_minimizers(seq, k_size, w_size):
 
 
 
-def get_all_hits_new(minimizers, minimizer_database, read_cl_id):
+def get_all_hits(minimizers, minimizer_database, read_cl_id):
     """
         Get all representatives ID's that shares matches with the minimizers in the read.  
     """
@@ -179,7 +137,7 @@ def parasail_block_alignment(s1, s2, k, match_id, match_score = 2, mismatch_pena
     else:
         cigar_string = str(result.cigar.decode, 'utf-8')
     
-    s1_alignment, s2_alignment = cigar_to_seq(cigar_string, s1, s2)
+    s1_alignment, s2_alignment = help_functions.cigar_to_seq(cigar_string, s1, s2)
 
     # Rolling window of matching blocks
     match_vector = [ 1 if n1 == n2 else 0 for n1, n2 in zip(s1_alignment, s2_alignment) ]    
@@ -244,12 +202,12 @@ def get_best_cluster_block_align(read_cl_id, representatives, hit_clusters_ids, 
     return  best_cluster_id, 0,  -1, -1, -1, alignment_ratio
 
 
-def reads_to_clusters(Cluster, representatives, sorted_reads, p_emp_probs, minimizer_database, new_batch_index, args):
+def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, minimizer_database, new_batch_index, args):
     """
         Iterates throughreads in sorted order (w.r.t. score) and:
             1. homopolymenr compresses the read and obtain minimizers
             2. Finds the homopolymenr compressed error rate (if not computed in previous pass if more than 1 core specified to the program)
-            3. Finds all the representatives with shared minimizers
+            3. Finds all the representatives that shares minimizers with the read
             4. Finds the best of the hits using mapping approach
             5. If no hit is found in 4. tries to align to representative with th most shared minimizers.
             6. Adds current read to representative, or makes it a new representative of a new cluster.
@@ -291,7 +249,7 @@ def reads_to_clusters(Cluster, representatives, sorted_reads, p_emp_probs, minim
             inv_map = {}
             for k, v in cluster_to_new_cluster_id.items():
                 inv_map.setdefault(v, set()).add(k)
-            cl_tmp = sorted( [ 1 + sum([len(Cluster[cl_id]) for cl_id in c ]) for c in inv_map.values() ], reverse= True)
+            cl_tmp = sorted( [ 1 + sum([len(clusters[cl_id]) for cl_id in c ]) for c in inv_map.values() ], reverse= True)
             cl_tmp_nontrivial = [cl_size_tmp for cl_size_tmp in cl_tmp if cl_size_tmp > 1]
             print("Processing read", i, "seq length:", len(seq), "nr non-trivial clusters:", len(cl_tmp_nontrivial), "kmers stored:", len(minimizer_database))
             print("clust distr:", [c_len for c_len in cl_tmp if c_len > 100] )
@@ -329,7 +287,7 @@ def reads_to_clusters(Cluster, representatives, sorted_reads, p_emp_probs, minim
 
         # 3. Find all the representatives with shared minimizers (this is the time consuming function for noisy and large datasets)
 
-        hit_clusters_ids, hit_clusters_hit_index, hit_clusters_hit_positions = get_all_hits_new(minimizers, minimizer_database, read_cl_id)
+        hit_clusters_ids, hit_clusters_hit_index, hit_clusters_hit_positions = get_all_hits(minimizers, minimizer_database, read_cl_id)
 
         
         # 4. Finds the best of the hits using mapping approach
@@ -372,10 +330,10 @@ def reads_to_clusters(Cluster, representatives, sorted_reads, p_emp_probs, minim
     # 8. Since all reads were initialized as their own representatives we need to reassign reads to their new representative, (this approach was implemented to deal with iterative assigment in the multiprocessing version)
     for read_cl_id in cluster_to_new_cluster_id:
         new_cl_id = cluster_to_new_cluster_id[read_cl_id]
-        all_reads = Cluster[read_cl_id]
+        all_reads = clusters[read_cl_id]
         for read_acc in all_reads:
-            Cluster[new_cl_id].append(read_acc)
-        del Cluster[read_cl_id]
+            clusters[new_cl_id].append(read_acc)
+        del clusters[read_cl_id]
         # delete old origins
         del representatives[read_cl_id]
     ##########################
@@ -386,7 +344,7 @@ def reads_to_clusters(Cluster, representatives, sorted_reads, p_emp_probs, minim
     print("Passed alignment criteria in this process:{0}".format(aln_passed_criteria))
     print("Total calls to alignment mudule in this process:{0}".format(aln_called))
 
-    return { new_batch_index : (Cluster, representatives, minimizer_database, new_batch_index)}
+    return { new_batch_index : (clusters, representatives, minimizer_database, new_batch_index)}
 
 
 def p_shared_minimizer_empirical(error_rate_read, error_rate_center, p_emp_probs):
