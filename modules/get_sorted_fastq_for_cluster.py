@@ -57,6 +57,10 @@ def calc_score_new(d):
     for i, (acc, seq, qual) in enumerate(l):
         if i % 10000 == 0:
             print(i, "reads processed.")
+
+        # skip very short reads
+        if len(seq) < 2*k:
+            continue
         poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
         error_rate = poisson_mean/float(len(qual))
         error_rates.append(error_rate)
@@ -122,7 +126,11 @@ def fastq_single_core(args):
     for i, (acc, (seq, qual)) in enumerate(help_functions.readfq(open(args.fastq, 'r'))):
         if i % 10000 == 0:
             print(i, "reads processed.")
-                
+
+        # skip very short reads
+        if len(seq) < 2*k:
+            continue
+    
         exp_errors_in_kmers = expected_number_of_erroneous_kmers(qual, k)
         p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
         score =  p_no_error_in_kmers  * (len(seq) - k +1)
