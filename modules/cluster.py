@@ -17,11 +17,11 @@ from modules import help_functions
 def get_kmer_minimizers(seq, k_size, w_size):
     # kmers = [seq[i:i+k_size] for i in range(len(seq)-k_size) ]
     w = w_size - k_size
-    window_kmers = deque([seq[i:i+k_size] for i in range(w)])
+    window_kmers = deque([seq[i:i+k_size] for i in range(w +1)])
     curr_min = min(window_kmers)
     minimizers = [ (curr_min, list(window_kmers).index(curr_min)) ]
 
-    for i in range(w,len(seq) - k_size):
+    for i in range(w+1,len(seq) - k_size):
         new_kmer = seq[i:i+k_size]
         # updateing window
         discarded_kmer = window_kmers.popleft()
@@ -283,7 +283,7 @@ def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, mini
             poisson_mean = sum([ qualcomp.count(char_) * phred_char_to_p[char_] for char_ in set(qualcomp)])
             h_pol_compr_error_rate = poisson_mean/float(len(qualcomp))
             representatives[read_cl_id] = (read_cl_id, new_batch_index, acc, seq, qual, score, h_pol_compr_error_rate) # adding homopolymenr compressed error rate to info tuple of cluster origin sequence
-        
+            
 
         # 3. Find all the representatives with shared minimizers (this is the time consuming function for noisy and large datasets)
 

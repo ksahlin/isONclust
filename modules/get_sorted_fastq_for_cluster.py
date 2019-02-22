@@ -13,6 +13,7 @@ import errno
 from time import time
 from collections import deque
 import sys
+import itertools
 
 from modules import help_functions
 
@@ -58,9 +59,11 @@ def calc_score_new(d):
         if i % 10000 == 0:
             print(i, "reads processed.")
 
-        # skip very short reads
-        if len(seq) < 2*k:
+        # skip very short reads or degenerate reads
+        seq_hpol_comp = ''.join(ch for ch, _ in itertools.groupby(seq))
+        if len(seq) < 2*k or len(seq_hpol_comp) < k or "_fail_" in acc:
             continue
+
         poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
         error_rate = poisson_mean/float(len(qual))
         error_rates.append(error_rate)
@@ -127,9 +130,11 @@ def fastq_single_core(args):
         if i % 10000 == 0:
             print(i, "reads processed.")
 
-        # skip very short reads
-        if len(seq) < 2*k:
+        # skip very short reads or degenerate reads
+        seq_hpol_comp = ''.join(ch for ch, _ in itertools.groupby(seq))
+        if len(seq) < 2*k or len(seq_hpol_comp) < args.k or "_fail_" in acc:
             continue
+        ########################
     
         exp_errors_in_kmers = expected_number_of_erroneous_kmers(qual, k)
         p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
