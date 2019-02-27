@@ -274,16 +274,33 @@ def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, mini
             t = tuple(lst)
             representatives[read_cl_id] =  t # just updated batch index
         else:
-            indices = [i for i, (n1,n2) in enumerate(zip(seq[:-1],seq[1:])) if n1 != n2] # indicies we want to take quality values from to get quality string of homopolymer compressed read 
-            indices.append(len(seq) - 1)
-            qualcomp = ''.join([qual[i] for i in indices])
+            # indices = [i for i, (n1,n2) in enumerate(zip(seq[:-1],seq[1:])) if n1 != n2] # indicies we want to take quality values from to get quality string of homopolymer compressed read 
+            # indices.append(len(seq) - 1)
+            # qualcomp = ''.join([qual[i] for i in indices])
+            # assert len(seq_hpol_comp) == len(qualcomp)
+            all_read_hpol_lengths = [len([c for c in g]) for ch, g in itertools.groupby(seq)]
+            # print(all_read_hpol_lengths)
+            qualcomp = []
+            start = 0
+            for h_len in all_read_hpol_lengths:
+                q_max = min(qual[start: start + h_len], key = lambda x: phred_char_to_p[x])
+                qualcomp.append(q_max)
+                # if h_len > 2:
+                #     print(qual[start: start + h_len], q_max)
+                start += h_len
+            qualcomp = "".join([q for q in qualcomp])
             assert len(seq_hpol_comp) == len(qualcomp)
+            # print(qualcomp)
+            # assert len(qualcomp) == len(qualcomp2)
+            # print(qualcomp)
+            # print(qualcomp2)
+            # print()
 
             # compute the average error rate after compression
             poisson_mean = sum([ qualcomp.count(char_) * phred_char_to_p[char_] for char_ in set(qualcomp)])
             h_pol_compr_error_rate = poisson_mean/float(len(qualcomp))
             representatives[read_cl_id] = (read_cl_id, new_batch_index, acc, seq, qual, score, h_pol_compr_error_rate) # adding homopolymenr compressed error rate to info tuple of cluster origin sequence
-            
+
 
         # 3. Find all the representatives with shared minimizers (this is the time consuming function for noisy and large datasets)
 
@@ -337,7 +354,6 @@ def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, mini
         # delete old origins
         del representatives[read_cl_id]
     ##########################
-    
 
     print("Total number of reads iterated through:{0}".format(len(sorted_reads)))
     print("Passed mapping criteria:{0}".format(mapped_passed_criteria))
