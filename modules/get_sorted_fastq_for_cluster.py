@@ -9,36 +9,18 @@ import multiprocessing as mp
 
 import operator
 import functools
-
 import errno
 from time import time
-
 from collections import deque
-
-import pickle
 import sys
-# from collections import OrderedDict
+import itertools
 
-def get_pickled_memory(data):
-    return sum(sys.getsizeof(pickle.dumps(d)) for d in data)
-
-# def get_kmer_quals(qual, k):
-#     return [ qual[i : i + k] for i in range(len(qual) - k +1)]
-
-# def expected_number_of_erroneous_kmers(kmer_quals):
-#     sum_of_expectations = 0
-#     for kmer in kmer_quals:
-#         p_not_error = 1.0 
-#         for char_ in set(kmer):
-#             p_not_error *= (1 - 10**( - (ord(char_) - 33)/10.0 ))**kmer.count(char_)
-#         sum_of_expectations += p_not_error
-
-#     return len(kmer_quals) - sum_of_expectations 
+from modules import help_functions
 
 D = {chr(i) : min( 10**( - (ord(chr(i)) - 33)/10.0 ), 0.5)  for i in range(128)}
 D_no_min = {chr(i) : 10**( - (ord(chr(i)) - 33)/10.0 )  for i in range(128)}
 
-def expected_number_of_erroneous_kmers_speed(quality_string, k):
+def expected_number_of_erroneous_kmers(quality_string, k):
     prob_error = [D[char_] for char_ in quality_string]
     window = deque([ (1.0 - p_e) for p_e in prob_error[:k]])
     # print(window)
@@ -56,54 +38,8 @@ def expected_number_of_erroneous_kmers_speed(quality_string, k):
     return len(quality_string) - k + 1 - sum_of_expectations 
 
 
-# def get_p_no_error_in_kmers_approximate(qual_string, k):
-#     poisson_mean = sum([ qual_string.count(char_) * 10**( - (ord(char_) - 33)/10.0 ) for char_ in set(qual_string)])
-#     error_rate = poisson_mean/float(len(qual_string))
-#     return (1.0 - error_rate)**k #1.0 - min(error_rate * k, 1.0)
-
-# def get_p_error_in_kmer(qual_string, k):
-#     poisson_mean = sum([ qual_string.count(char_) * 10**( - (ord(char_) - 33)/10.0 ) for char_ in set(qual_string)])
-#     error_rate = poisson_mean/float(len(qual_string))
-#     p_error_in_kmer = 1.0 - (1.0 - error_rate)**k
-#     return p_error_in_kmer
-
-def readfq(fp): # this is a generator function
-    last = None # this is a buffer keeping the last unprocessed line
-    while True: # mimic closure; is it a bad idea?
-        if not last: # the first record or a record following a fastq
-            for l in fp: # search for the start of the next record
-                if l[0] in '>@': # fasta/q header line
-                    last = l[:-1] # save this line
-                    break
-        if not last: break
-        name, seqs, last = last[1:].replace(" ", "_"), [], None
-        for l in fp: # read the sequence
-            if l[0] in '@+>':
-                last = l[:-1]
-                break
-            seqs.append(l[:-1])
-        if not last or last[0] != '+': # this is a fasta record
-            yield name, (''.join(seqs), None) # yield a fasta record
-            if not last: break
-        else: # this is a fastq record
-            seq, leng, seqs = ''.join(seqs), 0, []
-            for l in fp: # read the quality
-                seqs.append(l[:-1])
-                leng += len(l) - 1
-                if leng >= len(seq): # have read enough quality
-                    last = None
-                    yield name, (seq, ''.join(seqs)); # yield a fastq record
-                    break
-            if last: # reach EOF before reading enough quality
-                yield name, (seq, None) # yield a fasta record instead
-                break
-
-
 def reverse_complement(string):
-    #rev_nuc = {'A':'T', 'C':'G', 'G':'C', 'T':'A', 'N':'N', 'X':'X'}
-    # Modified for Abyss output
     rev_nuc = {'A':'T', 'C':'G', 'G':'C', 'T':'A', 'a':'t', 'c':'g', 'g':'c', 't':'a', 'N':'N', 'X':'X', 'n':'n', 'Y':'R', 'R':'Y', 'K':'M', 'M':'K', 'S':'S', 'W':'W', 'B':'V', 'V':'B', 'H':'D', 'D':'H', 'y':'r', 'r':'y', 'k':'m', 'm':'k', 's':'s', 'w':'w', 'b':'v', 'v':'b', 'h':'d', 'd':'h'}
-
     rev_comp = ''.join([rev_nuc[nucl] for nucl in reversed(string)])
     return(rev_comp)
 
@@ -122,36 +58,158 @@ def calc_score_new(d):
     for i, (acc, seq, qual) in enumerate(l):
         if i % 10000 == 0:
             print(i, "reads processed.")
+
+        # skip very short reads or degenerate reads
+        seq_hpol_comp = ''.join(ch for ch, _ in itertools.groupby(seq))
+        if len(seq) < 2*k or len(seq_hpol_comp) < k or "_fail_" in acc:
+            continue
+
         poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
         error_rate = poisson_mean/float(len(qual))
         error_rates.append(error_rate)
-        exp_errors_in_kmers = expected_number_of_erroneous_kmers_speed(qual, k)
+        exp_errors_in_kmers = expected_number_of_erroneous_kmers(qual, k)
         p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
         score =  p_no_error_in_kmers  * (len(seq) - k +1)
         read_array.append((acc, seq, qual, score) )
     return {key : (read_array, error_rates)}
 
 
-# def calc_score(tup):
-#     l, k = tup
-#     read_array = []
-#     error_rates = []
-#     for i, (acc, seq, qual) in enumerate(l):
-#         if i % 10000 == 0:
-#             print(i, "reads processed.")
-#         poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
-#         error_rate = poisson_mean/float(len(qual))
-#         error_rates.append(error_rate)
-#         exp_errors_in_kmers = expected_number_of_erroneous_kmers_speed(qual, k)
-#         p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
-#         score =  p_no_error_in_kmers  * (len(seq) - k +1)
-#         read_array.append((acc, seq, qual, score) )
-#     return read_array, error_rates
+def fastq_parallel(args):
+    k = args.k
+    error_rates = []
+    reads = [ (acc,seq, qual) for acc, (seq, qual) in help_functions.readfq(open(args.fastq, 'r'))]
+    start = time()
+    read_chunk_size = int( len(reads)/args.nr_cores ) + 1
+    read_batches = [b for b in batch(reads, read_chunk_size)]
+    del reads
+    ####### parallelize alignment #########
+    # pool = Pool(processes=mp.cpu_count())
+    original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, original_sigint_handler)
+    mp.set_start_method('spawn')
+    print(mp.get_context())
+    print("Environment set:", mp.get_context())
+    print("Using {0} cores.".format(args.nr_cores))
+    start_multi = time()
+    pool = Pool(processes=int(args.nr_cores))
+    try:
+        print([len(b) for b in read_batches])
+        data = [ {i : (b,k)} for i, b in enumerate(read_batches)] #[ {i+1 :((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, lowest_batch_index_db[i], i+1, args), {})} for i in range(len(read_batches))]
+        res = pool.map_async(calc_score_new, data)
+        score_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
+    except KeyboardInterrupt:
+        print("Caught KeyboardInterrupt, terminating workers")
+        pool.terminate()
+        sys.exit()
+    else:
+        pool.close()
+    pool.join()
+
+    print("Time elapesd multiprocessing:", time() - start_multi)
+    read_array, error_rates = [], []
+
+    for output_dict in score_results:
+        for k, v in output_dict.items():
+            r_a, err_rates = v
+            print("Batch index", k)
+            for item in r_a:
+                read_array.append(item)
+            for item2 in err_rates:
+                error_rates.append(item2)
+
+    read_array.sort(key=lambda x: x[3], reverse=True)
+    error_rates.sort()
+    return read_array, error_rates
+
+
+def fastq_single_core(args):
+    k = args.k
+    error_rates = []
+    read_array = []
+    for i, (acc, (seq, qual)) in enumerate(help_functions.readfq(open(args.fastq, 'r'))):
+        if i % 10000 == 0:
+            print(i, "reads processed.")
+
+        # skip very short reads or degenerate reads
+        seq_hpol_comp = ''.join(ch for ch, _ in itertools.groupby(seq))
+        if len(seq) < 2*k or len(seq_hpol_comp) < args.k or "_fail_" in acc:
+            continue
+        ########################
+    
+        exp_errors_in_kmers = expected_number_of_erroneous_kmers(qual, k)
+        p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
+        score =  p_no_error_in_kmers  * (len(seq) - k +1)
+        read_array.append((acc, seq, qual, score) )
+        
+        ## For (inferred) average error rate only, based on quality values
+        ### These values are used in evaluations in the paper only, and are not used in clustering
+        poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
+        error_rate = poisson_mean/float(len(qual))
+        error_rates.append(error_rate)
+        ##############################################
+    
+    read_array.sort(key=lambda x: x[3], reverse=True)
+    return read_array, error_rates
+
+
+def isoseq(args):
+    k = args.k
+    error_rates = []
+    flnc_file = pysam.AlignmentFile(args.flnc, "rb", check_sq=False)
+    ccs_file = pysam.AlignmentFile(args.ccs, "rb", check_sq=False)
+    flnc_dict = {}
+    for read in flnc_file.fetch(until_eof=True):
+        
+        # while quality values are not implemented in unpolished.flnc
+        flnc_dict[read.qname] = read.seq
+        # If quality values gets implemented, use this one-liner insetead..
+        # flnc_dict[read.qname] = (read.seq, read.qual)
+    
+    read_array = []
+    for read in ccs_file.fetch(until_eof=True):
+        if read.qname in flnc_dict:
+            # while quality values are not implemented in unpolished.flnc
+            seq = flnc_dict[read.qname]
+            full_seq = read.seq
+            full_seq_rc = reverse_complement(full_seq)
+            
+            if seq in full_seq:
+                start_index = full_seq.index(seq)
+                stop_index = start_index + len(seq)
+                qual = read.qual[start_index: stop_index]
+
+            elif seq in full_seq_rc:
+                qual = read.qual[::-1]
+                start_index = full_seq_rc.index(seq)
+                stop_index = start_index + len(seq)
+                qual = qual[start_index: stop_index]
+
+            else:
+                print("Bug, flnc not in ccs file")
+                sys.exit()
+
+            assert len(qual) == len(seq)
+
+            poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
+            error_rate = poisson_mean/float(len(qual))
+            error_rates.append(error_rate)
+            exp_errors_in_kmers = expected_number_of_erroneous_kmers(qual, k)
+            p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
+            score =  p_no_error_in_kmers  * (len(seq) - k +1)
+
+            read_array.append((read.qname, seq, qual, score) )
+
+            # If quality values gets implemented, simply use the code below and remove everythin above..
+            # seq, qual = flnc_dict[read.qname][0], flnc_dict[read.qname][1]
+            # p_no_error_in_kmers_appr =  get_p_no_error_in_kmers_approximate(qual,k)
+            # score = p_no_error_in_kmers_appr * len(seq)
+            # read_array.append((read.qname, seq, qual, score) )
+    read_array.sort(key=lambda x: x[3], reverse=True)
+    return read_array, error_rates
+
 
 def main(args):
     start = time()
-    k = args.k
-    error_rates = []
     logfile = open(os.path.join(args.outfolder, "logfile.txt"), 'w')
     if os.path.isfile(args.outfile):
         print("Warning, using already existing sorted file in specified directory, in not intended, specify different outfolder or delete the current file.")
@@ -159,187 +217,35 @@ def main(args):
 
     elif args.fastq:
         if args.nr_cores > 1: 
-            reads = [ (acc,seq, qual) for acc, (seq, qual) in readfq(open(args.fastq, 'r'))]
-            start = time()
-            read_chunk_size = int( len(reads)/args.nr_cores ) + 1
-            read_batches = [b for b in batch(reads, read_chunk_size)]
-            del reads
-            ####### parallelize alignment #########
-            # pool = Pool(processes=mp.cpu_count())
-            original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
-            signal.signal(signal.SIGINT, original_sigint_handler)
-            mp.set_start_method('spawn')
-            print(mp.get_context())
-            print("Environment set:", mp.get_context())
-            print("Using {0} cores.".format(args.nr_cores))
-            start_multi = time()
-            pool = Pool(processes=int(args.nr_cores))
-            try:
-                print([len(b) for b in read_batches])
-
-                # data1 = [(b,k) for b in read_batches]
-                data2 = [ {i : (b,k)} for i, b in enumerate(read_batches)] #[ {i+1 :((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, lowest_batch_index_db[i], i+1, args), {})} for i in range(len(read_batches))]
-                # print("Size:{0}Mb".format( [round( get_pickled_memory(d)/float(1000000), 2) for d in data1 ] ))
-                # print("Size:{0}Mb".format( [round( get_pickled_memory(d)/float(1000000), 2) for d in data2 ] ))
-
-                # res = pool.map_async(calc_score, [(b,k) for b in read_batches])
-                res = pool.map_async(calc_score_new, data2)
-                score_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
-            except KeyboardInterrupt:
-                print("Caught KeyboardInterrupt, terminating workers")
-                pool.terminate()
-                sys.exit()
-            else:
-                pool.close()
-            pool.join()
-
-            print("Time elapesd multiprocessing:", time() - start_multi)
-            read_array, error_rates = [], []
-
-            for output_dict in score_results:
-                for k, v in output_dict.items():
-                    r_a, err_rates = v
-                    print("Batch index", k)
-                    for item in r_a:
-                        read_array.append(item)
-                    for item2 in err_rates:
-                        error_rates.append(item2)
-
-
-            # for r_a, err_rates in score_results:
-            #     for item in r_a:
-            #         read_array.append(item)
-            #     for item2 in err_rates:
-            #         error_rates.append(item2)
-            # read_array = [item for r_a, err_rates in score_results for item in r_a]
-            read_array.sort(key=lambda x: x[3], reverse=True)
-            error_rates.sort()
-
+            read_array, error_rates = fastq_parallel(args)
         else:
-            read_array = []
-            for i, (acc, (seq, qual)) in enumerate(readfq(open(args.fastq, 'r'))):
-                if i % 10000 == 0:
-                    print(i, "reads processed.")
-                
-                poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
-                error_rate = poisson_mean/float(len(qual))
-                error_rates.append(error_rate)
-                exp_errors_in_kmers = expected_number_of_erroneous_kmers_speed(qual, k)
-                p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
-                score =  p_no_error_in_kmers  * (len(seq) - k +1)
-                # print("Exact speed:", p_no_error_in_kmers, score, exp_errors_in_kmers)
-
-                # print(sum(p_no_error_in_kmers)/float(len(p_no_error_in_kmers)), p_no_error_in_kmers_appr, qual)
-                read_array.append((acc, seq, qual, score) )
-            
-            read_array.sort(key=lambda x: x[3], reverse=True)
-            # print(read_array == read_array_new)
-            # print(len(read_array), len(read_array_new))
-            # print([a[0] for a in read_array] == [a[0] for a in read_array_new])
-
-        reads_sorted_outfile = open(args.outfile, "w")
-        for i, (acc, seq, qual, score) in enumerate(read_array):
-            reads_sorted_outfile.write("@{0}\n{1}\n+\n{2}\n".format(acc + "_{0}".format(score), seq, qual))
-        reads_sorted_outfile.close()
-
-        error_rates.sort()
-        min_e = error_rates[0]
-        max_e = error_rates[-1]
-        median_e = error_rates[int(len(error_rates)/2)]
-        mean_e = sum(error_rates)/len(error_rates)
-        logfile.write("Lowest read error rate:{0}\n".format(min_e))
-        logfile.write("Highest read error rate:{0}\n".format(max_e))
-        logfile.write("Median read error rate:{0}\n".format(median_e))
-        logfile.write("Mean read error rate:{0}\n".format(mean_e))
-        logfile.write("\n")
-        logfile.close()
-        print("Sorted all reads in {0} seconds.".format(time() - start) )
-        return reads_sorted_outfile.name
+            read_array, error_rates = fastq_single_core(args)
 
     elif args.flnc and args.ccs:
-        flnc_file = pysam.AlignmentFile(args.flnc, "rb", check_sq=False)
-        ccs_file = pysam.AlignmentFile(args.ccs, "rb", check_sq=False)
-        flnc_dict = {}
-        for read in flnc_file.fetch(until_eof=True):
-            
-            # while quality values are not implemented in unpolished.flnc
-            flnc_dict[read.qname] = read.seq
-            # If quality values gets implemented, use this one-liner insetead..
-            # flnc_dict[read.qname] = (read.seq, read.qual)
-        
-        read_array = []
-        for read in ccs_file.fetch(until_eof=True):
-            if read.qname in flnc_dict:
-                # while quality values are not implemented in unpolished.flnc
-                seq = flnc_dict[read.qname]
-                full_seq = read.seq
-                full_seq_rc = reverse_complement(full_seq)
-                
-                if seq in full_seq:
-                    start_index = full_seq.index(seq)
-                    stop_index = start_index + len(seq)
-                    qual = read.qual[start_index: stop_index]
-
-                elif seq in full_seq_rc:
-                    qual = read.qual[::-1]
-                    start_index = full_seq_rc.index(seq)
-                    stop_index = start_index + len(seq)
-                    qual = qual[start_index: stop_index]
-
-                else:
-                    print("Bug, flnc not in ccs file")
-                    sys.exit()
-
-                assert len(qual) == len(seq)
-
-                poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
-                error_rate = poisson_mean/float(len(qual))
-                error_rates.append(error_rate)
-                exp_errors_in_kmers = expected_number_of_erroneous_kmers_speed(qual, k)
-                p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
-                score =  p_no_error_in_kmers  * (len(seq) - k +1)
-
-                # p_no_error_in_kmers_appr =  get_p_no_error_in_kmers_approximate(qual,k)
-                # score = p_no_error_in_kmers_appr * len(seq)
-                read_array.append((read.qname, seq, qual, score) )
+        read_array, error_rates = isoseq(args)
+    else:
+        print("Wrong input format")
+        sys.exit()
 
 
-                # If quality values gets implemented, simply use the code below and remove everythin above..
-                # seq, qual = flnc_dict[read.qname][0], flnc_dict[read.qname][1]
-                # p_no_error_in_kmers_appr =  get_p_no_error_in_kmers_approximate(qual,k)
-                # score = p_no_error_in_kmers_appr * len(seq)
-                # read_array.append((read.qname, seq, qual, score) )
+    reads_sorted_outfile = open(args.outfile, "w")
+    for i, (acc, seq, qual, score) in enumerate(read_array):
+        reads_sorted_outfile.write("@{0}\n{1}\n+\n{2}\n".format(acc + "_{0}".format(score), seq, qual))
+    reads_sorted_outfile.close()
 
-        read_array.sort(key=lambda x: x[3], reverse=True)
-        reads_sorted_outfile = open(args.outfile, "w")
-        for i, (acc, seq, qual, score) in enumerate(read_array):
-            reads_sorted_outfile.write("@{0}\n{1}\n+\n{2}\n".format(acc + "_{0}".format(score), seq, qual))
-        reads_sorted_outfile.close()
-
-        error_rates.sort()
-        min_e = error_rates[0]
-        max_e = error_rates[-1]
-        median_e = error_rates[int(len(error_rates)/2)]
-        mean_e = sum(error_rates)/len(error_rates)
-        logfile.write("Lowest read error rate:{0}\n".format(min_e))
-        logfile.write("Highest read error rate:{0}\n".format(max_e))
-        logfile.write("Median read error rate:{0}\n".format(median_e))
-        logfile.write("Mean read error rate:{0}\n".format(mean_e))
-        logfile.write("\n")
-        logfile.close()
-        print("Sorted all reads in {0} seconds.".format(time() - start) )
-        return reads_sorted_outfile.name
-    
-
-def mkdir_p(path):
-    try:
-        os.makedirs(path)
-        print("creating", path)
-    except OSError as exc:  # Python >2.5
-        if exc.errno == errno.EEXIST and os.path.isdir(path):
-            pass
-        else:
-            raise
+    error_rates.sort()
+    min_e = error_rates[0]
+    max_e = error_rates[-1]
+    median_e = error_rates[int(len(error_rates)/2)]
+    mean_e = sum(error_rates)/len(error_rates)
+    logfile.write("Lowest read error rate:{0}\n".format(min_e))
+    logfile.write("Highest read error rate:{0}\n".format(max_e))
+    logfile.write("Median read error rate:{0}\n".format(median_e))
+    logfile.write("Mean read error rate:{0}\n".format(mean_e))
+    logfile.write("\n")
+    logfile.close()
+    print("Sorted all reads in {0} seconds.".format(time() - start) )
+    return reads_sorted_outfile.name
 
 
 if __name__ == '__main__':
@@ -365,6 +271,6 @@ if __name__ == '__main__':
         parser.print_help()
         sys.exit()
     path_, file_prefix = os.path.split(args.outfile)
-    mkdir_p(path_)
+    help_functions.mkdir_p(path_)
 
     main(args)

@@ -10,65 +10,48 @@ from time import time
 from modules import get_sorted_fastq_for_cluster
 from modules import cluster
 from modules import p_minimizers_shared
-
-'''
-    Below code taken from https://github.com/lh3/readfq/blob/master/readfq.py
-'''
-
-def readfq(fp): # this is a generator function
-    last = None # this is a buffer keeping the last unprocessed line
-    while True: # mimic closure; is it a bad idea?
-        if not last: # the first record or a record following a fastq
-            for l in fp: # search for the start of the next record
-                if l[0] in '>@': # fasta/q header line
-                    last = l[:-1] # save this line
-                    break
-        if not last: break
-        name, seqs, last = last[1:].replace(" ", "_"), [], None
-        for l in fp: # read the sequence
-            if l[0] in '@+>':
-                last = l[:-1]
-                break
-            seqs.append(l[:-1])
-        if not last or last[0] != '+': # this is a fasta record
-            yield name, (''.join(seqs), None) # yield a fasta record
-            if not last: break
-        else: # this is a fastq record
-            seq, leng, seqs = ''.join(seqs), 0, []
-            for l in fp: # read the quality
-                seqs.append(l[:-1])
-                leng += len(l) - 1
-                if leng >= len(seq): # have read enough quality
-                    last = None
-                    yield name, (seq, ''.join(seqs)); # yield a fastq record
-                    break
-            if last: # reach EOF before reading enough quality
-                yield name, (seq, None) # yield a fasta record instead
-                break
+from modules import help_functions
+from modules import parallelize
+from modules import cluster
 
 
+def single_clustering(read_array, p_emp_probs, args):
+    start_cluster = time()
+    clusters = {} # initialize every read as belonging to its own cluster
+    representatives = {} # initialize every read as its own representative
+    for i, b_i, acc, seq, qual, score in read_array:
+        clusters[i] = [acc]
+        representatives[i] = (i, b_i, acc, seq, qual, score)  
 
+    minimizer_database, new_batch_index = {}, 1 # These data structures are used in multiprocessing mode but. We use one core so only process everything in one "batch" and dont need to pass the minimizer database to later iterations.
+    result_dict = cluster.reads_to_clusters(clusters, representatives, read_array, p_emp_probs, minimizer_database, new_batch_index, args)
+    # Unpack result. The result dictionary structure is convenient for multiprocessing return but clumsy in single core mode.
+    clusters, representatives, _, _ = list(result_dict.values())[0]
+    print("Time elapesd clustering:", time() - start_cluster)
+    return clusters, representatives
 
-def mkdir_p(path):
-    try:
-        os.makedirs(path)
-        print("creating", path)
-    except OSError as exc:  # Python >2.5
-        if exc.errno == errno.EEXIST and os.path.isdir(path):
-            pass
-        else:
-            raise
 
 def main(args):
+    """
+        Code in main function is structures into 4 steps
+        1. Sort all reads according to expected errorfree kmers
+        2. Import precalculated probabilities of minimizer matching given the error rates of reads, kmer length, and window length. 
+            This is used for calculating if reads matches representative.
+        3. Cluster the reads
+        4. Write output
+    """
+    ##### Sort all reads according to expected errorfree kmers #####
     args.outfile = os.path.join(args.outfolder, "sorted.fastq")
-
     print("started sorting seqs")
     start = time()
     sorted_reads_fastq_file = get_sorted_fastq_for_cluster.main(args)
-    read_array = [ (i, 0, acc, seq, qual, float(acc.split("_")[-1])) for i, (acc, (seq, qual)) in enumerate(readfq(open(sorted_reads_fastq_file, 'r')))]
+    read_array = [ (i, 0, acc, seq, qual, float(acc.split("_")[-1])) for i, (acc, (seq, qual)) in enumerate(help_functions.readfq(open(sorted_reads_fastq_file, 'r')))]
     print("elapsed time sorting:", time() - start)
+    #################################################################
 
-    print("started imported empirical error probabilities of minimizers shared:")
+
+    ##### Import precalculated probabilities of minimizer matching given the error rates of reads, kmer length, and window length #####
+    print("Started imported empirical error probabilities of minimizers shared:")
     start = time()
     p_min_shared = p_minimizers_shared.read_empirical_p()
     p_emp_probs = {}
@@ -80,20 +63,27 @@ def main(args):
     print(p_emp_probs)
     print(len(p_emp_probs))
     print("elapsed time imported empirical error probabilities of minimizers shared:", time() - start)
-    # sys.exit()
+    ##################################################################################################################################
+
+    ##### Cluster reads, bulk of code base is here #####
     print("started clustring")
     start = time()
-    clusters, cluster_seq_origin = cluster.cluster_seqs(read_array, p_emp_probs,  args)
-    print("elapsed time clustering:", time() - start)
+    if args.nr_cores > 1:
+        clusters, representatives = parallelize.parallel_clustering(read_array, p_emp_probs, args)
+    else:
+        print("Using 1 core.")
+        clusters, representatives = single_clustering(read_array, p_emp_probs, args)
+    # clusters, representatives = cluster.cluster_seqs(read_array, p_emp_probs,  args)
+    print("Time elapsed clustering:", time() - start)
+    ####################################################
 
-    # reads = {acc: (seq,qual) for (acc, (seq, qual)) in  readfq(open(sorted_reads_fastq_file, 'r'))}
-    # nonclustered_outfile = open(os.path.join(reads_outfolder, "non_clustered.fa"), "w")
 
+    ##### Write output #####
     outfile = open(os.path.join(args.outfolder,  "final_clusters.csv"), "w")
     origins_outfile = open(os.path.join(args.outfolder,  "final_cluster_origins.csv"), "w")
     nontrivial_cluster_index = 0
     for c_id, all_read_acc in sorted(clusters.items(), key = lambda x: len(x[1]), reverse=True):
-        read_cl_id, b_i, acc, c_seq, c_qual, score, error_rate = cluster_seq_origin[c_id]
+        read_cl_id, b_i, acc, c_seq, c_qual, score, error_rate = representatives[c_id]
         origins_outfile.write("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\n".format(read_cl_id, "_".join([item for item in acc.split("_")[:-1]]), c_seq, c_qual, score, error_rate))
 
         for r_acc in all_read_acc:
@@ -102,11 +92,9 @@ def main(args):
             nontrivial_cluster_index += 1
     print("Nr clusters larger than 1:", nontrivial_cluster_index) #, "Non-clustered reads:", len(archived_reads))
     print("Nr clusters (all):", len(clusters)) #, "Non-clustered reads:", len(archived_reads))
-
     outfile.close()
     origins_outfile.close()
-
-    # for cl_id, all_read_acc in sorted(clusters.items(), key = lambda x: len(x[1]), reverse=True):
+    ############################
 
 
 def write_fastq(args):
@@ -119,8 +107,8 @@ def write_fastq(args):
             cl_id, acc = items[0], items[1]
             clusters[cl_id].append(acc)
 
-    mkdir_p(args.outfolder)
-    reads = { acc : (seq, qual) for acc, (seq, qual) in readfq(open(args.fastq, 'r'))}
+    help_functions.mkdir_p(args.outfolder)
+    reads = { acc : (seq, qual) for acc, (seq, qual) in help_functions.readfq(open(args.fastq, 'r'))}
     
     for cl_id in clusters:
         r = clusters[cl_id]
@@ -134,30 +122,10 @@ def write_fastq(args):
 
 
 
-    # curr_id = -1
-    # for i, cl_id, acc in enumerate(open(args.clusters, "r")): 
-    #     if i == 0:
-    #         curr_file = open(os.path.join(args.outfolder, str(cl_id) + ".fastq" ), "w")
-    #         seq, qual = reads[acc]
-    #         curr_file.write("{0}\n{1}\n{2}\n{3}\n".format(acc, seq, "+", qual))
-
-    #     elif curr_id != cl_id: # new cluster
-    #         curr_file.close()
-    #         curr_file = open(os.path.join(args.outfolder, str(cl_id) + ".fastq" ), "w")
-    #         seq, qual = reads[acc]
-    #         curr_file.write("{0}\n{1}\n{2}\n{3}\n".format(acc, seq, "+", qual))
-
-    #     else: # same as before
-    #         seq, qual = reads[acc]
-    #         curr_file.write("{0}\n{1}\n{2}\n{3}\n".format(acc, seq, "+", qual))
-
-    #     curr_id = cl_id
-
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="De novo clustering of long-read transcriptome reads", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--version', action='version', version='%(prog)s 0.0.3')
+    parser.add_argument('--version', action='version', version='%(prog)s 0.0.4')
 
     parser.add_argument('--fastq', type=str,  default=False, help='Path to consensus fastq file(s)')
     parser.add_argument('--flnc', type=str, default=False, help='The flnc reads generated by the isoseq3 algorithm (BAM file)')
