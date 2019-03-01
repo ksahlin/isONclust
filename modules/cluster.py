@@ -228,7 +228,7 @@ def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, mini
     aln_called = 0
     ###################
     
-    phred_char_to_p = {chr(i) : min( 10**( - (ord(chr(i)) - 33)/10.0 ), 0.5)  for i in range(128)} # PHRED encoded quality character to prob of error. Need this locally if multiprocessing
+    phred_char_to_p = {chr(i) : min( 10**( - (ord(chr(i)) - 33)/10.0 ), 0.79433)  for i in range(128)} # PHRED encoded quality character to prob of error. Need this locally if multiprocessing
     cluster_to_new_cluster_id = {}
 
     for i, (read_cl_id, prev_batch_index, acc, seq, qual, score) in enumerate(sorted_reads):

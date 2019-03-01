@@ -17,7 +17,7 @@ import itertools
 
 from modules import help_functions
 
-D = {chr(i) : min( 10**( - (ord(chr(i)) - 33)/10.0 ), 0.5)  for i in range(128)}
+D = {chr(i) : min( 10**( - (ord(chr(i)) - 33)/10.0 ), 0.79433)  for i in range(128)}
 D_no_min = {chr(i) : 10**( - (ord(chr(i)) - 33)/10.0 )  for i in range(128)}
 
 def expected_number_of_erroneous_kmers(quality_string, k):
