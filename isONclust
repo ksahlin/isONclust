@@ -101,7 +101,8 @@ def main(args):
     origins_outfile = open(os.path.join(args.outfolder,  "final_cluster_origins.csv"), "w")
     nontrivial_cluster_index = 0
     output_cl_id = 0
-    for c_id, all_read_acc in sorted(clusters.items(), key = lambda x: (len(x[1]),x[0]), reverse=True):
+    for c_id, all_read_acc in sorted(clusters.items(), key = lambda x: (len(x[1]),representatives[x[0]][5]), reverse=True):
+    # for c_id, all_read_acc in sorted(clusters.items(), key = lambda x: (len(x[1]),x[0]), reverse=True):
         read_cl_id, b_i, acc, c_seq, c_qual, score, error_rate = representatives[c_id]
         origins_outfile.write("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\n".format(output_cl_id, "_".join([item for item in acc.split("_")[:-1]]), c_seq, c_qual, score, error_rate))
 
