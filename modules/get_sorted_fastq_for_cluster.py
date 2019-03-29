@@ -61,7 +61,7 @@ def calc_score_new(d):
 
         # skip very short reads or degenerate reads
         seq_hpol_comp = ''.join(ch for ch, _ in itertools.groupby(seq))
-        if len(seq) < 2*k or len(seq_hpol_comp) < k or "_fail_" in acc:
+        if len(seq) < 2*k or len(seq_hpol_comp) < k:
             continue
 
         poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
@@ -132,7 +132,7 @@ def fastq_single_core(args):
 
         # skip very short reads or degenerate reads
         seq_hpol_comp = ''.join(ch for ch, _ in itertools.groupby(seq))
-        if len(seq) < 2*k or len(seq_hpol_comp) < args.k or "_fail_" in acc:
+        if len(seq) < 2*k or len(seq_hpol_comp) < args.k:
             continue
         ########################
     
