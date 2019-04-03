@@ -245,16 +245,18 @@ def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, mini
         
         ################################################################################
         ############  Just for develop purposes, print some info to std out ############
-        if i%10000 == 0 and i > 0: 
+        if i % args.print_output == 0 and i > 0: 
             inv_map = {}
             for k, v in cluster_to_new_cluster_id.items():
                 inv_map.setdefault(v, set()).add(k)
             cl_tmp = sorted( [ 1 + sum([len(clusters[cl_id]) for cl_id in c ]) for c in inv_map.values() ], reverse= True)
             cl_tmp_nontrivial = [cl_size_tmp for cl_size_tmp in cl_tmp if cl_size_tmp > 1]
-            print("Processing read", i, "seq length:", len(seq), "nr non-trivial clusters:", len(cl_tmp_nontrivial), "kmers stored:", len(minimizer_database))
-            print("clust distr:", [c_len for c_len in cl_tmp if c_len > 100] )
-            depth = [len(nr_cl) for kmer, nr_cl in  sorted(minimizer_database.items(), key=lambda x: len(x[1]), reverse= True)[:50]]
-            print("Depth of minimizer_database:", sum(depth)/float(len(depth)), depth)
+            print("Processing read", i+1 , "seq length:", len(seq), "nr non-trivial clusters:", len(cl_tmp_nontrivial), "kmers stored:", len(minimizer_database))
+            print("Non trivial cluster sizes:", sorted(cl_tmp_nontrivial, reverse=True))
+            # print("clust distr:", [c_len for c_len in cl_tmp if c_len > 100] )
+            # depth = [len(nr_cl) for kmer, nr_cl in  sorted(minimizer_database.items(), key=lambda x: len(x[1]), reverse= True) if len(nr_cl) > 1 ]
+            # print("Minimizer database depths:", depth)
+            # print("Nr trivial clusters :", cl_sizes)
         ################################################################################
         ################################################################################
 
