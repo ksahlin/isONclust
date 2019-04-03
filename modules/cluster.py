@@ -232,7 +232,7 @@ def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, mini
     cluster_to_new_cluster_id = {}
 
     if args.print_output:
-        print("Iteration\tNrClusters\tMinDbSize\tClusterSizes")
+        print("Iteration\tNrClusters\tMinDbSize\tCurrReadId\tClusterSizes")
 
     for i, (read_cl_id, prev_batch_index, acc, seq, qual, score) in enumerate(sorted_reads):
 
