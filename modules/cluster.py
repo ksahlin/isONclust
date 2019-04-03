@@ -231,6 +231,9 @@ def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, mini
     phred_char_to_p = {chr(i) : min( 10**( - (ord(chr(i)) - 33)/10.0 ), 0.79433)  for i in range(128)} # PHRED encoded quality character to prob of error. Need this locally if multiprocessing
     cluster_to_new_cluster_id = {}
 
+    if args.print_output:
+        print("Iteration\tNrClusters\tMinDbSize\tClusterSizes")
+
     for i, (read_cl_id, prev_batch_index, acc, seq, qual, score) in enumerate(sorted_reads):
 
         ## This if statement is only active in parallelization code 
@@ -251,8 +254,10 @@ def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, mini
                 inv_map.setdefault(v, set()).add(k)
             cl_tmp = sorted( [ 1 + sum([len(clusters[cl_id]) for cl_id in c ]) for c in inv_map.values() ], reverse= True)
             cl_tmp_nontrivial = [cl_size_tmp for cl_size_tmp in cl_tmp if cl_size_tmp > 1]
-            print("Processing read", i+1 , "seq length:", len(seq), "nr non-trivial clusters:", len(cl_tmp_nontrivial), "kmers stored:", len(minimizer_database))
-            print("Non trivial cluster sizes:", sorted(cl_tmp_nontrivial, reverse=True))
+            print("{0}\t{1}\t{2}\t{3}\t{4}".format(i+1, len(cl_tmp_nontrivial), len(minimizer_database), "_".join(acc.split("_")[:-1]), ",".join([str(s_) for s_ in sorted(cl_tmp_nontrivial, reverse=True)])))
+            # print("Processing read", i+1 , "seq length:", len(seq), "nr non-trivial clusters:", len(cl_tmp_nontrivial), "kmers stored:", len(minimizer_database))
+            # print("Non trivial cluster sizes:", sorted(cl_tmp_nontrivial, reverse=True))
+
             # print("clust distr:", [c_len for c_len in cl_tmp if c_len > 100] )
             # depth = [len(nr_cl) for kmer, nr_cl in  sorted(minimizer_database.items(), key=lambda x: len(x[1]), reverse= True) if len(nr_cl) > 1 ]
             # print("Minimizer database depths:", depth)
