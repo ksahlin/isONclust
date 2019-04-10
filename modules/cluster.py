@@ -201,6 +201,9 @@ def get_best_cluster_block_align(read_cl_id, representatives, hit_clusters_ids, 
 
     return  best_cluster_id, 0,  -1, -1, -1, alignment_ratio
 
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
 
 def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, minimizer_database, new_batch_index, args):
     """
@@ -232,7 +235,7 @@ def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, mini
     cluster_to_new_cluster_id = {}
 
     if args.print_output:
-        print("Iteration\tNrClusters\tMinDbSize\tCurrReadId\tClusterSizes")
+        eprint("Iteration\tNrClusters\tMinDbSize\tCurrReadId\tClusterSizes")
 
     for i, (read_cl_id, prev_batch_index, acc, seq, qual, score) in enumerate(sorted_reads):
 
@@ -248,13 +251,13 @@ def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, mini
         
         ################################################################################
         ############  Just for develop purposes, print some info to std out ############
-        if i % args.print_output == 0 and i > 0: 
+        if i % args.print_output == 0: 
             inv_map = {}
             for k, v in cluster_to_new_cluster_id.items():
                 inv_map.setdefault(v, set()).add(k)
             cl_tmp = sorted( [ 1 + sum([len(clusters[cl_id]) for cl_id in c ]) for c in inv_map.values() ], reverse= True)
             cl_tmp_nontrivial = [cl_size_tmp for cl_size_tmp in cl_tmp if cl_size_tmp > 1]
-            print("{0}\t{1}\t{2}\t{3}\t{4}".format(i+1, len(cl_tmp_nontrivial), len(minimizer_database), "_".join(acc.split("_")[:-1]), ",".join([str(s_) for s_ in sorted(cl_tmp_nontrivial, reverse=True)])))
+            eprint("{0}\t{1}\t{2}\t{3}\t{4}".format(i, len(cl_tmp_nontrivial), len(minimizer_database), "_".join(acc.split("_")[:-1]), ",".join([str(s_) for s_ in sorted(cl_tmp_nontrivial, reverse=True)])))
             # print("Processing read", i+1 , "seq length:", len(seq), "nr non-trivial clusters:", len(cl_tmp_nontrivial), "kmers stored:", len(minimizer_database))
             # print("Non trivial cluster sizes:", sorted(cl_tmp_nontrivial, reverse=True))
 
