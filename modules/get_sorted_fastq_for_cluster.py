@@ -14,6 +14,7 @@ from time import time
 from collections import deque
 import sys
 import itertools
+import math
 
 from modules import help_functions
 
@@ -51,7 +52,7 @@ def batch(iterable, n=1):
 
 def calc_score_new(d):
     for key,value in d.items():
-        l, k = value
+        l, k, q_threshold = value
 
     read_array = []
     error_rates = []
@@ -66,6 +67,10 @@ def calc_score_new(d):
 
         poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
         error_rate = poisson_mean/float(len(qual))
+        if 10*-math.log(error_rate, 10) <= q_threshold:
+            # print("Filtered read with:", 10*-math.log(error_rate, 10), error_rate)
+            continue
+
         error_rates.append(error_rate)
         exp_errors_in_kmers = expected_number_of_erroneous_kmers(qual, k)
         p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
@@ -76,6 +81,7 @@ def calc_score_new(d):
 
 def fastq_parallel(args):
     k = args.k
+    q_threshold = args.quality_threshold
     error_rates = []
     reads = [ (acc,seq, qual) for acc, (seq, qual) in help_functions.readfq(open(args.fastq, 'r'))]
     start = time()
@@ -94,7 +100,7 @@ def fastq_parallel(args):
     pool = Pool(processes=int(args.nr_cores))
     try:
         print([len(b) for b in read_batches])
-        data = [ {i : (b,k)} for i, b in enumerate(read_batches)] #[ {i+1 :((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, lowest_batch_index_db[i], i+1, args), {})} for i in range(len(read_batches))]
+        data = [ {i : (b,k, q_threshold)} for i, b in enumerate(read_batches)] #[ {i+1 :((cluster_batches[i], cluster_seq_origin_batches[i], read_batches[i], p_emp_probs, lowest_batch_index_db[i], i+1, args), {})} for i in range(len(read_batches))]
         res = pool.map_async(calc_score_new, data)
         score_results =res.get(999999999) # Without the timeout this blocking call ignores all signals.
     except KeyboardInterrupt:
@@ -124,6 +130,7 @@ def fastq_parallel(args):
 
 def fastq_single_core(args):
     k = args.k
+    q_threshold = args.quality_threshold
     error_rates = []
     read_array = []
     for i, (acc, (seq, qual)) in enumerate(help_functions.readfq(open(args.fastq, 'r'))):
@@ -139,15 +146,19 @@ def fastq_single_core(args):
         exp_errors_in_kmers = expected_number_of_erroneous_kmers(qual, k)
         p_no_error_in_kmers = 1.0 - exp_errors_in_kmers/ float((len(seq) - k +1))
         score =  p_no_error_in_kmers  * (len(seq) - k +1)
-        read_array.append((acc, seq, qual, score) )
         
         ## For (inferred) average error rate only, based on quality values
         ### These values are used in evaluations in the paper only, and are not used in clustering
         poisson_mean = sum([ qual.count(char_) * D_no_min[char_] for char_ in set(qual)])
         error_rate = poisson_mean/float(len(qual))
+        if 10*-math.log(error_rate, 10) <= q_threshold:
+            # print("Filtered read with:", 10*-math.log(error_rate, 10), error_rate)
+            continue
         error_rates.append(error_rate)
         ##############################################
-    
+        
+        read_array.append((acc, seq, qual, score) )
+
     read_array.sort(key=lambda x: x[3], reverse=True)
     return read_array, error_rates
 
@@ -232,7 +243,7 @@ def main(args):
     for i, (acc, seq, qual, score) in enumerate(read_array):
         reads_sorted_outfile.write("@{0}\n{1}\n+\n{2}\n".format(acc + "_{0}".format(score), seq, qual))
     reads_sorted_outfile.close()
-
+    print(len(read_array), "reads passed quality critera (avg phred Q val over {0} and length > 2*k) and will be clustered.".format(args.quality_threshold))
     error_rates.sort()
     min_e = error_rates[0]
     max_e = error_rates[-1]
