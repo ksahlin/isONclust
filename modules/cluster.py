@@ -77,7 +77,7 @@ def get_best_cluster(read_cl_id, compressed_seq_len, hit_clusters_ids, hit_clust
     nr_shared_kmers = 0
     mapped_ratio = 0.0
     if hit_clusters_ids:
-        top_matches = sorted(hit_clusters_hit_positions.items(), key=lambda x: (len(x[1]), sum(x[1])),  reverse=True) #sorted(hit_clusters_ids.items(), key=lambda x: x[1],  reverse=True)
+        top_matches = sorted(hit_clusters_hit_positions.items(), key=lambda x: (len(x[1]), sum(x[1]), representatives[x[0]][2]),  reverse=True) #sorted(hit_clusters_ids.items(), key=lambda x: x[1],  reverse=True)
         top_hits = len(top_matches[0][1])
         nr_shared_kmers = top_hits
         if top_hits < args.min_shared:
@@ -168,7 +168,7 @@ def parasail_block_alignment(s1, s2, k, match_id, match_score = 2, mismatch_pena
 
 def get_best_cluster_block_align(read_cl_id, representatives, hit_clusters_ids, hit_clusters_hit_positions, phred_char_to_p, args):
     best_cluster_id = -1
-    top_matches = sorted(hit_clusters_hit_positions.items(), key=lambda x: (len(x[1]), sum(x[1])),  reverse=True) #sorted(hit_clusters_ids.items(), key=lambda x: x[1],  reverse=True)
+    top_matches = sorted(hit_clusters_hit_positions.items(), key=lambda x: (len(x[1]), sum(x[1]), representatives[x[0]][2]),  reverse=True) #sorted(hit_clusters_ids.items(), key=lambda x: x[1],  reverse=True)
     _, _, _, seq, r_qual, _, _ = representatives[read_cl_id]
     # print(top_matches)
     top_hits = len(top_matches[0][1])
