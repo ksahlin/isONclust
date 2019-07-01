@@ -97,8 +97,8 @@ def main(args):
     # ############################
 
     ##### Write output in sorted quality order! #####
-    outfile = open(os.path.join(args.outfolder,  "final_clusters.csv"), "w")
-    origins_outfile = open(os.path.join(args.outfolder,  "final_cluster_origins.csv"), "w")
+    outfile = open(os.path.join(args.outfolder,  "final_clusters.tsv"), "w")
+    origins_outfile = open(os.path.join(args.outfolder,  "final_cluster_origins.tsv"), "w")
     nontrivial_cluster_index = 0
     output_cl_id = 0
     for c_id, all_read_acc in sorted(clusters.items(), key = lambda x: (len(x[1]),representatives[x[0]][5]), reverse=True):
@@ -155,6 +155,8 @@ if __name__ == '__main__':
     parser.add_argument('--ccs', type=str, default=False, help='Path to consensus BAM file(s)')
     # parser.add_argument('--mapping', action="store_true", help='Only infer clusters by mapping, no alignment is performed.')
     parser.add_argument('--t', dest="nr_cores", type=int, default=8, help='Number of cores allocated for clustering')
+    parser.add_argument('--d', dest="print_output", type=int, default=10000, help='Number of cores allocated for clustering')
+    parser.add_argument('--q', dest="quality_threshold", type=float, default=7.0, help='Number of cores allocated for clustering')
 
     parser.add_argument('--ont', action="store_true", help='Clustering of ONT transcript reads.')
     parser.add_argument('--isoseq', action="store_true", help='Clustering of PacBio Iso-Seq reads.')

@@ -77,15 +77,15 @@ def get_best_cluster(read_cl_id, compressed_seq_len, hit_clusters_ids, hit_clust
     nr_shared_kmers = 0
     mapped_ratio = 0.0
     if hit_clusters_ids:
-        top_matches = sorted(hit_clusters_ids.items(), key=lambda x: x[1],  reverse=True)
-        top_hits = top_matches[0][1]
+        top_matches = sorted(hit_clusters_hit_positions.items(), key=lambda x: (len(x[1]), sum(x[1]), representatives[x[0]][2]),  reverse=True) #sorted(hit_clusters_ids.items(), key=lambda x: x[1],  reverse=True)
+        top_hits = len(top_matches[0][1])
         nr_shared_kmers = top_hits
         if top_hits < args.min_shared:
             pass
         else:
             for tm in top_matches:
                 cl_id = tm[0]
-                nm_hits = tm[1]
+                nm_hits = len(tm[1])
                 if nm_hits < args.min_fraction * top_hits or nm_hits < args.min_shared:
                     break
 
@@ -166,16 +166,16 @@ def parasail_block_alignment(s1, s2, k, match_id, match_score = 2, mismatch_pena
     return (s1, s2, (s1_alignment, s2_alignment, alignment_ratio))
 
 
-def get_best_cluster_block_align(read_cl_id, representatives, hit_clusters_ids, phred_char_to_p, args):
+def get_best_cluster_block_align(read_cl_id, representatives, hit_clusters_ids, hit_clusters_hit_positions, phred_char_to_p, args):
     best_cluster_id = -1
-    top_matches = sorted(hit_clusters_ids.items(), key=lambda x: x[1],  reverse=True)
+    top_matches = sorted(hit_clusters_hit_positions.items(), key=lambda x: (len(x[1]), sum(x[1]), representatives[x[0]][2]),  reverse=True) #sorted(hit_clusters_ids.items(), key=lambda x: x[1],  reverse=True)
     _, _, _, seq, r_qual, _, _ = representatives[read_cl_id]
     # print(top_matches)
-    top_hits = top_matches[0][1]
+    top_hits = len(top_matches[0][1])
     alignment_ratio = 0.0
     for tm in top_matches:
         cl_id = tm[0]
-        nm_hits = tm[1]
+        nm_hits = len(tm[1])
         if nm_hits < top_hits:
             break
         _, _, _, c_seq, c_qual, _, _ = representatives[cl_id]
@@ -200,6 +200,9 @@ def get_best_cluster_block_align(read_cl_id, representatives, hit_clusters_ids, 
             return cl_id, nm_hits,  error_rate_sum, s1_alignment, s2_alignment, alignment_ratio
 
     return  best_cluster_id, 0,  -1, -1, -1, alignment_ratio
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 
 def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, minimizer_database, new_batch_index, args):
@@ -231,6 +234,9 @@ def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, mini
     phred_char_to_p = {chr(i) : min( 10**( - (ord(chr(i)) - 33)/10.0 ), 0.79433)  for i in range(128)} # PHRED encoded quality character to prob of error. Need this locally if multiprocessing
     cluster_to_new_cluster_id = {}
 
+    if args.print_output:
+        eprint("Iteration\tNrClusters\tMinDbSize\tCurrReadId\tClusterSizes")
+
     for i, (read_cl_id, prev_batch_index, acc, seq, qual, score) in enumerate(sorted_reads):
 
         ## This if statement is only active in parallelization code 
@@ -245,16 +251,20 @@ def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, mini
         
         ################################################################################
         ############  Just for develop purposes, print some info to std out ############
-        if i%10000 == 0 and i > 0: 
+        if i % args.print_output == 0: 
             inv_map = {}
             for k, v in cluster_to_new_cluster_id.items():
                 inv_map.setdefault(v, set()).add(k)
             cl_tmp = sorted( [ 1 + sum([len(clusters[cl_id]) for cl_id in c ]) for c in inv_map.values() ], reverse= True)
             cl_tmp_nontrivial = [cl_size_tmp for cl_size_tmp in cl_tmp if cl_size_tmp > 1]
-            print("Processing read", i, "seq length:", len(seq), "nr non-trivial clusters:", len(cl_tmp_nontrivial), "kmers stored:", len(minimizer_database))
-            print("clust distr:", [c_len for c_len in cl_tmp if c_len > 100] )
-            depth = [len(nr_cl) for kmer, nr_cl in  sorted(minimizer_database.items(), key=lambda x: len(x[1]), reverse= True)[:50]]
-            print("Depth of minimizer_database:", sum(depth)/float(len(depth)), depth)
+            eprint("{0}\t{1}\t{2}\t{3}\t{4}".format(i, len(cl_tmp_nontrivial), len(minimizer_database), "_".join(acc.split("_")[:-1]), ",".join([str(s_) for s_ in sorted(cl_tmp_nontrivial, reverse=True)])))
+            # print("Processing read", i+1 , "seq length:", len(seq), "nr non-trivial clusters:", len(cl_tmp_nontrivial), "kmers stored:", len(minimizer_database))
+            # print("Non trivial cluster sizes:", sorted(cl_tmp_nontrivial, reverse=True))
+
+            # print("clust distr:", [c_len for c_len in cl_tmp if c_len > 100] )
+            # depth = [len(nr_cl) for kmer, nr_cl in  sorted(minimizer_database.items(), key=lambda x: len(x[1]), reverse= True) if len(nr_cl) > 1 ]
+            # print("Minimizer database depths:", depth)
+            # print("Nr trivial clusters :", cl_sizes)
         ################################################################################
         ################################################################################
 
@@ -319,7 +329,7 @@ def reads_to_clusters(clusters, representatives, sorted_reads, p_emp_probs, mini
 
         if best_cluster_id_m < 0 and nr_shared_kmers_m >= args.min_shared:
             aln_called += 1
-            best_cluster_id_a, nr_shared_kmers_a, error_rate_sum, s1_alignment, s2_alignment, alignment_ratio = get_best_cluster_block_align(read_cl_id, representatives, hit_clusters_ids, phred_char_to_p, args)
+            best_cluster_id_a, nr_shared_kmers_a, error_rate_sum, s1_alignment, s2_alignment, alignment_ratio = get_best_cluster_block_align(read_cl_id, representatives, hit_clusters_ids, hit_clusters_hit_positions, phred_char_to_p, args)
             if best_cluster_id_a >= 0:
                 aln_passed_criteria += 1
 
