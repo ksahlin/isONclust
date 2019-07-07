@@ -104,7 +104,7 @@ def print_intermediate_results(clusters, cluster_seq_origin, args, iter_nr):
 
 def parallel_clustering(read_array, p_emp_probs, args):
     num_batches = args.nr_cores 
-    read_batches = [batch for batch in batch_list(read_array, num_batches, batch_type = "weighted" )]
+    read_batches = [batch for batch in batch_list(read_array, num_batches, batch_type = "total_nt" )]
     print("Using total nucleotide batch sizes:", [sum([len(seq) for i, b_i, acc, seq, qual, score in b]) for b in read_batches] )
     print("Using nr reads batch sizes:", [len(b)  for b in read_batches] )
     cluster_batches = []
@@ -192,7 +192,7 @@ def parallel_clustering(read_array, p_emp_probs, args):
             print_intermediate_results(all_clusters, all_representatives, args, it)
 
         it += 1
-        read_batches = [batch for batch in batch_list(read_array, num_batches, batch_type = "weighted", merge_consecutive = True)]
+        read_batches = [batch for batch in batch_list(read_array, num_batches, batch_type = "total_nt", merge_consecutive = True)]
         num_batches = len(read_batches)
         print("Batches after pairwise consecutive merge:", num_batches)
         print("Using total nucleotide batch sizes:", [sum([len(seq) for i, b_i, acc, seq, qual, score in b]) for b in read_batches] )
