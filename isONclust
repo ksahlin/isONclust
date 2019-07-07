@@ -97,7 +97,7 @@ def main(args):
     # ############################
 
     ##### Write output in sorted quality order! #####
-    outfile = open(os.path.join(args.outfolder,  "final_clusters.tsv"), "w")
+    outfile = open(os.path.join(args.outfolder,  "final_clusters.csv"), "w")
     origins_outfile = open(os.path.join(args.outfolder,  "final_cluster_origins.tsv"), "w")
     nontrivial_cluster_index = 0
     output_cl_id = 0
@@ -174,7 +174,7 @@ if __name__ == '__main__':
 
     subparsers = parser.add_subparsers(help='sub-command help')
     write_fastq_parser = subparsers.add_parser('write_fastq', help='a help')
-    write_fastq_parser.add_argument('--clusters', type=str, help='the file "final_clusters.tsv created by isONclust."')
+    write_fastq_parser.add_argument('--clusters', type=str, help='the file "final_clusters.csv created by isONclust."')
     write_fastq_parser.add_argument('--fastq', type=str, help='Input fastq file')
     write_fastq_parser.add_argument('--outfolder', type=str, help='Output folder')
     write_fastq_parser.add_argument('--N', type=int, default = 0, help='Write out clusters with more or equal than N reads')
