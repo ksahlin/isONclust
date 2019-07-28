@@ -64,13 +64,13 @@ def batch_list(lst, nr_cores=1, batch_type = "nr_reads" , merge_consecutive = Fa
                     curr_size = 0
             yield batch   
         
-        elif batch_type == "weighted":
-            tot_length = sum([math.sqrt(len(seq)) for i, b_i, acc, seq, qual, score in lst] )
+        elif batch_type == "read_lengths_squared":
+            tot_length = sum([ math.pow(len(seq),2) for i, b_i, acc, seq, qual, score in lst] )
             nt_chunk_size = int(tot_length/nr_cores) + 1
             batch = []
             curr_size = 0
             for info in lst:
-                curr_size += math.sqrt(len(info[3]))
+                curr_size +=  math.pow(len(info[3]),2) 
                 batch.append(info)
                 if curr_size >= nt_chunk_size:
                     yield batch
@@ -104,9 +104,9 @@ def print_intermediate_results(clusters, cluster_seq_origin, args, iter_nr):
 
 def parallel_clustering(read_array, p_emp_probs, args):
     num_batches = args.nr_cores 
-    read_batches = [batch for batch in batch_list(read_array, num_batches, batch_type = "total_nt" )]
+    read_batches = [batch for batch in batch_list(read_array, num_batches, batch_type = "read_lengths_squared" )]
     print("Using total nucleotide batch sizes:", [sum([len(seq) for i, b_i, acc, seq, qual, score in b]) for b in read_batches] )
-    print("Using nr reads batch sizes:", [len(b)  for b in read_batches] )
+    print("Nr reads in batches:", [len(b)  for b in read_batches] )
     cluster_batches = []
     cluster_seq_origin_batches = []
     lowest_batch_index_db = []
@@ -192,7 +192,7 @@ def parallel_clustering(read_array, p_emp_probs, args):
             print_intermediate_results(all_clusters, all_representatives, args, it)
 
         it += 1
-        read_batches = [batch for batch in batch_list(read_array, num_batches, batch_type = "total_nt", merge_consecutive = True)]
+        read_batches = [batch for batch in batch_list(read_array, num_batches, batch_type = "read_lengths_squared", merge_consecutive = True)]
         num_batches = len(read_batches)
         print("Batches after pairwise consecutive merge:", num_batches)
         print("Using total nucleotide batch sizes:", [sum([len(seq) for i, b_i, acc, seq, qual, score in b]) for b in read_batches] )

@@ -97,7 +97,7 @@ def main(args):
     # ############################
 
     ##### Write output in sorted quality order! #####
-    outfile = open(os.path.join(args.outfolder,  "final_clusters.csv"), "w")
+    outfile = open(os.path.join(args.outfolder,  "final_clusters.tsv"), "w")
     origins_outfile = open(os.path.join(args.outfolder,  "final_cluster_origins.tsv"), "w")
     nontrivial_cluster_index = 0
     output_cl_id = 0
