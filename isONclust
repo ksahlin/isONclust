@@ -166,6 +166,7 @@ if __name__ == '__main__':
     parser.add_argument('--min_shared', type=int, default=5, help='Minmum number of minimizers shared between read and cluster')
     parser.add_argument('--mapped_threshold', type=float, default=0.7, help='Minmum mapped fraction of read to be included in cluster. The density of minimizers to classify a region as mapped depends on quality of the read.')
     parser.add_argument('--aligned_threshold', type=float, default=0.4, help='Minmum aligned fraction of read to be included in cluster. Aligned identity depends on the quality of the read.')
+    parser.add_argument('--batch_type', type=str, default='total_nt', help='In parrallel mode, how to split the reads into chunks "total_nt", "nr_reads", or "weighted" (default: total_nt) ')
     parser.add_argument('--min_fraction', type=float, default=0.8, help='Minmum fraction of minimizers shared compared to best hit, in order to continue mapping.')
     parser.add_argument('--min_prob_no_hits', type=float, default=0.1, help='Minimum probability for i consecutive minimizers to be different between read and representative and still considered as mapped region, under assumption that they come from the same transcript (depends on read quality).')
     parser.add_argument('--outfolder', type=str,  default=None, help='A fasta file with transcripts that are shared between samples and have perfect illumina support.')
