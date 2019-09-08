@@ -160,6 +160,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--ont', action="store_true", help='Clustering of ONT transcript reads.')
     parser.add_argument('--isoseq', action="store_true", help='Clustering of PacBio Iso-Seq reads.')
+    parser.add_argument('--use_old_sorted_file', action="store_true", help='Using already existing sorted file if present in specified output directory.')
 
     parser.add_argument('--k', type=int, default=15, help='Kmer size')
     parser.add_argument('--w', type=int, default=50, help='Window size')

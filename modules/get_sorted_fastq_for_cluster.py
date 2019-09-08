@@ -222,8 +222,8 @@ def isoseq(args):
 def main(args):
     start = time()
     logfile = open(os.path.join(args.outfolder, "logfile.txt"), 'w')
-    if os.path.isfile(args.outfile):
-        print("Warning, using already existing sorted file in specified directory, in not intended, specify different outfolder or delete the current file.")
+    if os.path.isfile(args.outfile) and args.use_old_sorted_file:
+        print("Using already existing sorted file in specified directory, in not intended, specify different outfolder or delete the current file.")
         return args.outfile
 
     elif args.fastq:
