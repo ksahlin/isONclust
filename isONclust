@@ -155,8 +155,8 @@ if __name__ == '__main__':
     parser.add_argument('--ccs', type=str, default=False, help='Path to consensus BAM file(s)')
     # parser.add_argument('--mapping', action="store_true", help='Only infer clusters by mapping, no alignment is performed.')
     parser.add_argument('--t', dest="nr_cores", type=int, default=8, help='Number of cores allocated for clustering')
-    parser.add_argument('--d', dest="print_output", type=int, default=10000, help='Number of cores allocated for clustering')
-    parser.add_argument('--q', dest="quality_threshold", type=float, default=7.0, help='Number of cores allocated for clustering')
+    parser.add_argument('--d', dest="print_output", type=int, default=10000, help='For debugging, prints status of clustering and minimizer database every p reads processed.')
+    parser.add_argument('--q', dest="quality_threshold", type=float, default=7.0, help='Filters reads with average phred quality value under this number (default = 7.0).')
 
     parser.add_argument('--ont', action="store_true", help='Clustering of ONT transcript reads.')
     parser.add_argument('--isoseq', action="store_true", help='Clustering of PacBio Iso-Seq reads.')
