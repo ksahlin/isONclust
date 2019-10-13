@@ -19,7 +19,7 @@ with open(path.join(here, 'README.md'), encoding='utf-8') as f:
 setup(
 
     name='isONclust',  # Required
-    version='0.0.4',  # Required
+    version='0.0.5',  # Required
     description='De novo clustering of long-read transcriptome reads.',  # Required
     long_description=long_description,  # Optional
     url='https://github.com/ksahlin/isONclust',  # Optional
@@ -46,11 +46,12 @@ setup(
 
         # Specify the Python versions you support here. In particular, ensure
         # that you indicate whether you support Python 2, Python 3 or both.
-        'Programming Language :: Python :: 2.7',
+        #'Programming Language :: Python :: 2.7',
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.4',
         'Programming Language :: Python :: 3.5',
         'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
     ],
 
     keywords='Iso-Seq CCS PacBio Oxford Nanopore Technologies transcript long-read',  # Optional
@@ -67,7 +68,7 @@ setup(
     packages=find_packages(exclude=['contrib', 'docs', 'tests']),  # Required
 
     # If your package is for Python 2.7, and all versions of Python 3 starting with 3.4, write
-    python_requires='>=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, <4',
+    python_requires='!=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, <4',
     # This field lists other packages that your project depends on to run.
     # Any package you put here will be installed by pip when your project is
     # installed, so they must be valid existing projects.
