@@ -70,6 +70,7 @@ Make sure the below listed dependencies are installed (installation links below)
 * [parasail](https://github.com/jeffdaily/parasail-python)
 * [pysam](http://pysam.readthedocs.io/en/latest/installation.html) (>= v0.11)
 
+In addition, please make sure you use python version >=3.4. isONclust will not work with python 2.
 
 With these dependencies installed. Run
 
