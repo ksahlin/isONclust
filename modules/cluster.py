@@ -21,7 +21,7 @@ def get_kmer_minimizers(seq, k_size, w_size):
     curr_min = min(window_kmers)
     minimizers = [ (curr_min, list(window_kmers).index(curr_min)) ]
 
-    for i in range(w+1,len(seq) - k_size):
+    for i in range(w+1,len(seq) - k_size + 1):
         new_kmer = seq[i:i+k_size]
         # updateing window
         discarded_kmer = window_kmers.popleft()
