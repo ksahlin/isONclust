@@ -96,20 +96,37 @@ def run_spoa(reads, spoa_out_file, spoa_path):
 
 def detect_reverse_complements(centers, rc_identity_threshold):
     filtered_centers = []
-    for i, (nr_reads_in_cl, c_id, seq) in enumerate(centers[:-1]):
-        for j, (nr_reads_in_cl2, c_id2, seq2) in enumerate(centers[i+1:]):
-            seq2_rc = reverse_complement(seq2)
-            seq_aln, seq2_rc_aln, cigar_string, cigar_tuples, alignment_score = parasail_alignment(seq, seq2_rc)
-            # print(i,j)
-            print(seq_aln)
-            print(seq2_rc)
-            nr_mismatching_pos = len([1 for n1, n2 in zip(seq_aln, seq2_rc_aln) if n1 != n2])
-            total_pos = len(seq_aln)
-            aln_identity =  (total_pos - nr_mismatching_pos) / float(total_pos)
-            print(aln_identity)
-            if aln_identity >= rc_identity_threshold:
-                print("Detected alignment identidy above threchold for reverse complement. Keeping center with the most read support and adding rc reads to supporting reads.")
-                filtered_centers.append( (nr_reads_in_cl+nr_reads_in_cl2, c_id, seq) )
+    already_removed = set()
+    for i, (nr_reads_in_cl, c_id, seq) in enumerate(centers):
+        merged_cluster_id = c_id
+        merged_nr_reads = nr_reads_in_cl
+        if c_id in already_removed:
+            print("has already been merged, skipping")
+            continue
+
+        elif i == len(centers) - 1: # last sequence and it is not in already removed
+            filtered_centers.append( (merged_nr_reads, c_id, seq) )
+
+        else:
+
+            for j, (nr_reads_in_cl2, c_id2, seq2) in enumerate(centers[i+1:]):
+                seq2_rc = reverse_complement(seq2)
+                seq_aln, seq2_rc_aln, cigar_string, cigar_tuples, alignment_score = parasail_alignment(seq, seq2_rc)
+                # print(i,j)
+                # print(seq_aln)
+                # print(seq2_rc_aln)
+                nr_mismatching_pos = len([1 for n1, n2 in zip(seq_aln, seq2_rc_aln) if n1 != n2])
+                total_pos = len(seq_aln)
+                aln_identity =  (total_pos - nr_mismatching_pos) / float(total_pos)
+                print(aln_identity)
+
+                if aln_identity >= rc_identity_threshold:
+                    print("Detected alignment identidy above threchold for reverse complement. Keeping center with the most read support and adding rc reads to supporting reads.")
+                    merged_nr_reads += nr_reads_in_cl2
+                    already_removed.add(c_id2)
+            filtered_centers.append( (merged_nr_reads, c_id, seq) )
+
+    print(len(filtered_centers), "consensus formed.")
     return filtered_centers
 
 
