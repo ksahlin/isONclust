@@ -114,7 +114,7 @@ def main(args):
         nr_reads = len(reads)
         abundance_cutoff = int( args.abundance_ratio * nr_reads)
         for c_id, all_read_acc in sorted(clusters.items(), key = lambda x: (len(x[1]),representatives[x[0]][5]), reverse=True):
-            reads_path = open(os.path.join(work_dir, "reads_tmp.fq"), "w")
+            reads_path = open(os.path.join(work_dir, "reads_c_id_{0}.fq".format(c_id)), "w")
             nr_reads_in_cluster = len(all_read_acc)
             if nr_reads_in_cluster >= abundance_cutoff:
                 for acc in all_read_acc:
@@ -125,18 +125,37 @@ def main(args):
                 # spoa_ref = create_augmented_reference.run_spoa(reads_path.name, os.path.join(work_dir,"spoa_tmp.fa"), "spoa")
                 print("creating center of {0} sequences.".format(nr_reads_in_cluster))
                 center = consensus.run_spoa(reads_path.name, os.path.join(work_dir,"spoa_tmp.fa"), "spoa")
-                centers.append( (nr_reads_in_cluster, c_id, center))
+                centers.append( (nr_reads_in_cluster, c_id, center, reads_path.name))
         print("{0} centers formed".format(len(centers)))
         centers_filtered = consensus.detect_reverse_complements(centers, args.rc_identity_threshold)
-        if args.medaka:
-            print('Currently not implemented')
-        else:
-            polished_outfile = os.path.join(args.outfolder, "consensus_references.fasta")
+
+        # printing output from spoa and grouping reads
+        to_medaka = []
+        for (nr_reads_in_cluster, c_id, center, all_reads) in centers_filtered:
+            polished_outfile = os.path.join(args.outfolder, "consensus_reference_{0}.fasta".format(c_id))
             f = open(polished_outfile, "w")
-            for (nr_reads_in_cluster, c_id, center) in centers_filtered:
-                f.write(">{0}\n{1}\n".format("consensus_cl_id:{0}_total_supporting_reads:{1}".format(c_id,nr_reads_in_cluster), center))
+            f.write(">{0}\n{1}\n".format("consensus_cl_id_{0}_total_supporting_reads_{1}".format(c_id, nr_reads_in_cluster), center))
+            f.close()
+            
+            all_reads_file = os.path.join(args.outfolder, "reads_to_consensus_{0}.fasta".format(c_id))
+            f = open(all_reads_file, "w")
+            for fasta_file in all_reads: 
+                reads = { acc : (seq, qual) for acc, (seq, qual) in help_functions.readfq(open(fasta_file, 'r'))}
+                for acc, (seq, qual) in reads.items():
+                    f.write("@{0}\n{1}\n{2}\n{3}\n".format(acc, seq, "+", qual))
+            f.close()
+            to_medaka.append( (nr_reads_in_cluster, c_id, polished_outfile, all_reads_file) )
+        print("Saving spoa references to files:", os.path.join(args.outfolder, "consensus_reference_X.fasta"))
+
+        if args.medaka:
+            print("running medaka separately on each spoa reference.")
+            for (nr_reads_in_cluster, c_id, center_file, all_reads_file) in to_medaka:
+                medaka_outfolder = os.path.join(args.outfolder, "medaka_cl_id_{0}".format(c_id))
+                help_functions.mkdir_p(medaka_outfolder)
+                consensus.run_medaka(all_reads_file, center_file, medaka_outfolder, "1", args.medaka_model)
+            # consensus.run_medaka( " medaka_consensus -i ~/tmp/stefan_isonclust/mixed_b1_b3_b4_b5.fastq -d ~/tmp/stefan_isonclust/mixed_b1_b3_b4_b5_isonclust/consensus_references.fasta -o ~/tmp/stefan_isonclust/mixed_b1_b3_b4_b5_medaka/ -t 1 -m r941_min_high_g303")
+            print("Saving medaka references to files:", os.path.join(args.outfolder, "medaka_cl_id_X/consensus.fasta"))
         print("removing temporary workdir")
-        print("Saving references in:", f.name)
         f.close()
         shutil.rmtree(work_dir)
 
@@ -188,6 +207,7 @@ if __name__ == '__main__':
     parser.add_argument('--abundance_ratio', type=float, default=0.1, help='Threshold for --consensus algorithm. Consider only clusters larger than a fraction of number of total reads (default 0.1)')
     parser.add_argument('--rc_identity_threshold', type=float, default=0.9, help='Threshold for --consensus algorithm. Define a reverse complement if identity is over this threshold (default 0.9)')
     parser.add_argument('--medaka', action="store_true", help='Run final medaka polishing algorithm.')
+    parser.add_argument('--medaka_model', type=str, default="r941_min_high_g330", help='Path to consensus BAM file(s)')
 
 
     parser.add_argument('--k', type=int, default=15, help='Kmer size')

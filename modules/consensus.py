@@ -1,6 +1,6 @@
 from __future__ import print_function
 import subprocess
-import sys
+import sys, os
 from sys import stdout
 import re 
 import shutil
@@ -94,10 +94,23 @@ def run_spoa(reads, spoa_out_file, spoa_path):
     consensus = l[1].strip()
     return consensus
 
+def run_medaka(reads_to_center, center, outfolder, cores, medaka_model):
+    medaka_stdout = os.path.join(outfolder, "stdout.txt")
+    with open(medaka_stdout, "w") as output_file:
+        # print('Running medaka...', end=' ')
+        stdout.flush()
+        medaka_stderr = open(os.path.join(outfolder, "stderr.txt"), "w")
+        subprocess.check_call(['medaka_consensus', '-i', reads_to_center, "-d", center, "-o", outfolder, "-t", cores, "-m", medaka_model], stdout=output_file, stderr=medaka_stderr)
+        # print('Done.')
+        stdout.flush()
+    output_file.close()
+    # consensus.run_medaka( " medaka_consensus -i ~/tmp/stefan_isonclust/mixed_b1_b3_b4_b5.fastq -d ~/tmp/stefan_isonclust/mixed_b1_b3_b4_b5_isonclust/consensus_references.fasta -o ~/tmp/stefan_isonclust/mixed_b1_b3_b4_b5_medaka/ -t 1 -m r941_min_high_g303")
+
+
 def detect_reverse_complements(centers, rc_identity_threshold):
     filtered_centers = []
     already_removed = set()
-    for i, (nr_reads_in_cl, c_id, seq) in enumerate(centers):
+    for i, (nr_reads_in_cl, c_id, seq, reads_path) in enumerate(centers):
         merged_cluster_id = c_id
         merged_nr_reads = nr_reads_in_cl
         if c_id in already_removed:
@@ -105,11 +118,11 @@ def detect_reverse_complements(centers, rc_identity_threshold):
             continue
 
         elif i == len(centers) - 1: # last sequence and it is not in already removed
-            filtered_centers.append( (merged_nr_reads, c_id, seq) )
+            filtered_centers.append( (merged_nr_reads, c_id, seq, [reads_path]) )
 
         else:
-
-            for j, (nr_reads_in_cl2, c_id2, seq2) in enumerate(centers[i+1:]):
+            all_reads = [reads_path]
+            for j, (nr_reads_in_cl2, c_id2, seq2, reads_path) in enumerate(centers[i+1:]):
                 seq2_rc = reverse_complement(seq2)
                 seq_aln, seq2_rc_aln, cigar_string, cigar_tuples, alignment_score = parasail_alignment(seq, seq2_rc)
                 # print(i,j)
@@ -124,7 +137,8 @@ def detect_reverse_complements(centers, rc_identity_threshold):
                     print("Detected alignment identidy above threchold for reverse complement. Keeping center with the most read support and adding rc reads to supporting reads.")
                     merged_nr_reads += nr_reads_in_cl2
                     already_removed.add(c_id2)
-            filtered_centers.append( (merged_nr_reads, c_id, seq) )
+                    all_reads.append(reads_path)
+            filtered_centers.append( (merged_nr_reads, c_id, seq, all_reads) )
 
     print(len(filtered_centers), "consensus formed.")
     return filtered_centers
