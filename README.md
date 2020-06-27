@@ -152,22 +152,24 @@ CREDITS
 
 Please cite [1] when using isONclust.
 
-1. Kristoffer Sahlin, Paul Medvedev (2019) "De Novo Clustering of Long-Read Transcriptome Data Using a Greedy, Quality-Value Based Algorithm", RECOMB 2019 [Link](https://link.springer.com/chapter/10.1007/978-3-030-17083-7_14).
+1. Kristoffer Sahlin, Paul Medvedev (2019) "De Novo Clustering of Long-Read Transcriptome Data Using a Greedy, Quality-Value Based Algorithm", Journal of Computational Biology 2020 27:4, 472-484. [Link](https://www.liebertpub.com/doi/abs/10.1089/cmb.2019.0299).
 
-Bib record: 
 
-@InProceedings{10.1007/978-3-030-17083-7_14,
-author="Sahlin, Kristoffer
-and Medvedev, Paul",
-editor="Cowen, Lenore J.",
-title="De Novo Clustering of Long-Read Transcriptome Data Using a Greedy, Quality-Value Based Algorithm",
-booktitle="Research in Computational Molecular Biology",
-year="2019",
-publisher="Springer International Publishing",
-address="Cham",
-pages="227--242",
-abstract="Long-read sequencing of transcripts with PacBio Iso-Seq and Oxford Nanopore Technologies has proven to be central to the study of complex isoform landscapes in many organisms. However, current de novo transcript reconstruction algorithms from long-read data are limited, leaving the potential of these technologies unfulfilled. A common bottleneck is the dearth of scalable and accurate algorithms for clustering long reads according to their gene family of origin. To address this challenge, we develop isONclust, a clustering algorithm that is greedy (in order to scale) and makes use of quality values (in order to handle variable error rates). We test isONclust on three simulated and five biological datasets, across a breadth of organisms, technologies, and read depths. Our results demonstrate that isONclust is a substantial improvement over previous approaches, both in terms of overall accuracy and/or scalability to large datasets. Our tool is available at https://github.com/ksahlin/isONclust.",
-isbn="978-3-030-17083-7"
+#### Bib record
+
+@article{sahlin2020a,
+author = {Sahlin, Kristoffer and Medvedev, Paul},
+title = {De Novo Clustering of Long-Read Transcriptome Data Using a Greedy, Quality Value-Based Algorithm},
+journal = {Journal of Computational Biology},
+volume = {27},
+number = {4},
+pages = {472-484},
+year = {2020},
+doi = {10.1089/cmb.2019.0299},
+    note ={PMID: 32181688},
+URL = {https://doi.org/10.1089/cmb.2019.0299},
+eprint = {https://doi.org/10.1089/cmb.2019.0299},
+    abstract = { Long-read sequencing of transcripts with Pacific Biosciences (PacBio) Iso-Seq and Oxford Nanopore Technologies has proven to be central to the study of complex isoform landscapes in many organisms. However, current de novo transcript reconstruction algorithms from long-read data are limited, leaving the potential of these technologies unfulfilled. A common bottleneck is the dearth of scalable and accurate algorithms for clustering long reads according to their gene family of origin. To address this challenge, we develop isONclust, a clustering algorithm that is greedy (to scale) and makes use of quality values (to handle variable error rates). We test isONclust on three simulated and five biological data sets, across a breadth of organisms, technologies, and read depths. Our results demonstrate that isONclust is a substantial improvement over previous approaches, both in terms of overall accuracy and/or scalability to large data sets. }
 }
 
 LICENCE
