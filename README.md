@@ -154,6 +154,7 @@ Please cite [1] when using isONclust.
 
 1. Kristoffer Sahlin, Paul Medvedev (2019) "De Novo Clustering of Long-Read Transcriptome Data Using a Greedy, Quality-Value Based Algorithm", Journal of Computational Biology 2020 27:4, 472-484. [Link](https://www.liebertpub.com/doi/abs/10.1089/cmb.2019.0299).
 
+Here is an open access version of the paper: [bioRxiv link](https://www.biorxiv.org/content/10.1101/463463v1).
 
 #### Bib record
 
