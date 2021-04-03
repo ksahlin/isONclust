@@ -40,7 +40,8 @@ def batch_list(lst, nr_cores=1, batch_type = "nr_reads" , merge_consecutive = Fa
                 batch_id += 2
                 batch = []
                 batch.append(info)
-        yield batch
+        if batch:
+            yield batch
 
     else:
         if batch_type == "nr_reads":
@@ -62,7 +63,8 @@ def batch_list(lst, nr_cores=1, batch_type = "nr_reads" , merge_consecutive = Fa
                     yield batch
                     batch = []
                     curr_size = 0
-            yield batch   
+            if batch:
+                yield batch
         
         elif batch_type == "read_lengths_squared":
             tot_length = sum([ math.pow(len(seq),2) for i, b_i, acc, seq, qual, score in lst] )
@@ -76,7 +78,8 @@ def batch_list(lst, nr_cores=1, batch_type = "nr_reads" , merge_consecutive = Fa
                     yield batch
                     batch = []
                     curr_size = 0
-            yield batch               
+            if batch:
+                yield batch
 
 
 

@@ -167,10 +167,10 @@ number = {4},
 pages = {472-484},
 year = {2020},
 doi = {10.1089/cmb.2019.0299},
-    note ={PMID: 32181688},
+note ={PMID: 32181688},
 URL = {https://doi.org/10.1089/cmb.2019.0299},
 eprint = {https://doi.org/10.1089/cmb.2019.0299},
-    abstract = { Long-read sequencing of transcripts with Pacific Biosciences (PacBio) Iso-Seq and Oxford Nanopore Technologies has proven to be central to the study of complex isoform landscapes in many organisms. However, current de novo transcript reconstruction algorithms from long-read data are limited, leaving the potential of these technologies unfulfilled. A common bottleneck is the dearth of scalable and accurate algorithms for clustering long reads according to their gene family of origin. To address this challenge, we develop isONclust, a clustering algorithm that is greedy (to scale) and makes use of quality values (to handle variable error rates). We test isONclust on three simulated and five biological data sets, across a breadth of organisms, technologies, and read depths. Our results demonstrate that isONclust is a substantial improvement over previous approaches, both in terms of overall accuracy and/or scalability to large data sets. }
+abstract = { Long-read sequencing of transcripts with Pacific Biosciences (PacBio) Iso-Seq and Oxford Nanopore Technologies has proven to be central to the study of complex isoform landscapes in many organisms. However, current de novo transcript reconstruction algorithms from long-read data are limited, leaving the potential of these technologies unfulfilled. A common bottleneck is the dearth of scalable and accurate algorithms for clustering long reads according to their gene family of origin. To address this challenge, we develop isONclust, a clustering algorithm that is greedy (to scale) and makes use of quality values (to handle variable error rates). We test isONclust on three simulated and five biological data sets, across a breadth of organisms, technologies, and read depths. Our results demonstrate that isONclust is a substantial improvement over previous approaches, both in terms of overall accuracy and/or scalability to large data sets. }
 }
 
 LICENCE
