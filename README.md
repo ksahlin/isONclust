@@ -1,5 +1,9 @@
+**[isONclust3](https://github.com/aljpetri/isONclust3) is now available and is much faster and typically more accurate than isONclust. We recommend using [isONclust3](https://github.com/aljpetri/isONclust3) instead, particularly if you want to cluster more than 10 million reads.**
+
 isONclust
 ===========
+
+
 
 isONclust is a tool for clustering either PacBio Iso-Seq reads, or Oxford Nanopore reads into clusters, where each cluster represents all reads that came from a gene. Output is a tsv file with each read assigned to a cluster-ID. Detailed information is available in [paper](https://link.springer.com/chapter/10.1007/978-3-030-17083-7_14).  
 
