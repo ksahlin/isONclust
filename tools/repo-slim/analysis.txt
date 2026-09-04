@@ -1,0 +1,51 @@
+Repository slimming analysis
+============================================================
+
+total distinct blob bytes in history :    0.526 GB
+  to be stripped                     :    0.520 GB  (98.8%)
+  retained (source, scripts, docs)   :    0.006 GB
+  retained fixtures under test_data/ :    0.000 MB
+
+paths stripped: 14
+
+Largest paths being removed
+------------------------------------------------------------
+       94.37 MB  test/ccs.fastq.gz.part-ac
+       94.37 MB  test/ccs.fastq.gz.part-ab
+       94.37 MB  test/ccs.fastq.gz.part-aa
+       81.56 MB  test/ccs.fastq.gz.part-ad
+       74.10 MB  test/old_sorted_ens_100k.fastq.tar.gz
+       73.09 MB  test/ENS_100k.fastq.tar.gz
+        6.87 MB  test/sample_alz_2k.fastq
+        1.13 MB  modules/__pycache__/p_minimizers_shared.cpython-36.pyc
+        0.02 MB  modules/__pycache__/cluster.cpython-36.pyc
+        0.01 MB  test/isonclust1.out
+        0.01 MB  modules/__pycache__/get_sorted_fastq_for_cluster.cpython-36.pyc
+        0.01 MB  modules/.DS_Store
+        0.00 MB  modules/__pycache__/__init__.cpython-36.pyc
+
+Note: git stores each distinct blob once, so identical files at different
+paths are counted under whichever path reaches them first. This is not
+cosmetic -- it reflects real storage. Checked on this history:
+
+  * Only three blobs in all of isONclust's history are reachable at more
+    than one path: modules/.DS_Store == scripts/.DS_Store (both stripped),
+    cemetary/cluster_parallel.py == modules/cluster_parallel.py, and
+    modules/compute_shared_minimizers_probabilities.py ==
+    scripts/compute_shared_minimizer_probabilities.py (all retained). So the
+    deduplication trap that made isONcorrect's first removal list wrong does
+    not bite here -- but this list is still built from a tree walk, because
+    that is the only way to know that.
+
+  * test/ccs.fastq.gz was committed as four `split` parts, part-aa..part-ad,
+    365 MB together. They are four blobs, not one file, and archive_data.sh
+    reassembles them (verified with `gzip -t`) before they are destroyed.
+
+  * KEEP is empty on purpose. test/sample_alz_2k.fastq is wanted back, but
+    it was already deleted from HEAD, so protecting its historical blob
+    would not restore it. It is re-added as a fresh commit after the
+    rewrite -- same 6.9 MB, explicit provenance.
+
+Fixtures explicitly retained
+------------------------------------------------------------
+  (none -- see the KEEP comment in analyze.sh)
