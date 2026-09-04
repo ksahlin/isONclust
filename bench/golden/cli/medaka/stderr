@@ -1,0 +1,9 @@
+Iteration	NrClusters	MinDbSize	CurrReadId	ClusterSizes
+0	0	0	read_59_from_SIRV703	
+Traceback (most recent call last):
+  File "<PATH>/isONclust", line 263, in <module>
+    main(args)
+  File "<PATH>/isONclust", line 139, in main
+    print("Saving references in:", f.name)
+                                   ^
+UnboundLocalError: cannot access local variable 'f' where it is not associated with a value

@@ -1,0 +1,10 @@
+usage: isONclust write_fastq [-h] [--clusters CLUSTERS] [--fastq FASTQ]
+                             [--outfolder OUTFOLDER] [--N N]
+
+options:
+  -h, --help            show this help message and exit
+  --clusters CLUSTERS   the file "final_clusters.csv created by isONclust."
+  --fastq FASTQ         Input fastq file
+  --outfolder OUTFOLDER
+                        Output folder
+  --N N                 Write out clusters with more or equal than N reads

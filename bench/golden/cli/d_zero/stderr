@@ -1,0 +1,13 @@
+Traceback (most recent call last):
+  File "<PATH>/isONclust", line 263, in <module>
+    main(args)
+  File "<PATH>/isONclust", line 75, in main
+    clusters, representatives = single_clustering(read_array, p_emp_probs, args)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<PATH>/isONclust", line 27, in single_clustering
+    result_dict = cluster.reads_to_clusters(clusters, representatives, read_array, p_emp_probs, minimizer_database, new_batch_index, args)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<PATH>/isONclust/modules/cluster.py", line 255, in reads_to_clusters
+    if i % args.print_output == 0: 
+       ~~^~~~~~~~~~~~~~~~~~~
+ZeroDivisionError: integer modulo by zero

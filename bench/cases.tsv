@@ -1,0 +1,47 @@
+# The equivalence case matrix, TAB-separated: name<TAB>entry<TAB>args
+#
+# THE SEPARATOR IS A REAL TAB. This file was first written space-aligned for
+# readability; `read -r name entry args` with IFS=tab then put the whole line
+# into $name, every case ran with NO arguments, and all 29 goldens recorded the
+# same default invocation -- reported as 29 passes. Nothing in the output said
+# so; the case count and the file count were both plausible. If you edit this
+# file, do not let an editor expand tabs.
+#
+# `entry` is `main` or `write_fastq`. --fastq and --outfolder come from the
+# harness; write_fastq additionally consumes the `default` case's clustering.
+#
+# Only parameters that can change output are swept. --t is NOT a performance
+# knob: on the smoke corpus --t 1 gives 40 clusters and --t 8 gives 35. It
+# selects a different algorithm (hierarchical batch merge vs a single pass), so
+# each --t value is its own case.
+#
+# --isoseq is exactly --k 15 --w 50 and --ont is exactly --k 13 --w 20, so the
+# explicit k/w cases below cover the presets; only one preset case is kept, to
+# pin that the preset still resolves to those values.
+default	main	--isoseq --t 1
+ont	main	--ont --t 1
+k13w20	main	--k 13 --w 20 --t 1
+k9w25	main	--k 9 --w 25 --t 1
+k20w100	main	--k 20 --w 100 --t 1
+k15w15	main	--k 15 --w 15 --t 1
+q0	main	--isoseq --t 1 --q 0
+q15	main	--isoseq --t 1 --q 15
+min_shared2	main	--isoseq --t 1 --min_shared 2
+min_shared20	main	--isoseq --t 1 --min_shared 20
+mapped0.3	main	--isoseq --t 1 --mapped_threshold 0.3
+mapped0.95	main	--isoseq --t 1 --mapped_threshold 0.95
+aligned0.1	main	--isoseq --t 1 --aligned_threshold 0.1
+aligned0.9	main	--isoseq --t 1 --aligned_threshold 0.9
+min_fraction0.5	main	--isoseq --t 1 --min_fraction 0.5
+min_fraction1.0	main	--isoseq --t 1 --min_fraction 1.0
+min_prob0.01	main	--isoseq --t 1 --min_prob_no_hits 0.01
+min_prob0.5	main	--isoseq --t 1 --min_prob_no_hits 0.5
+t2	main	--isoseq --t 2
+t4	main	--isoseq --t 4
+t8	main	--isoseq --t 8
+t8_nr_reads	main	--isoseq --t 8 --batch_type nr_reads
+t8_total_nt	main	--isoseq --t 8 --batch_type total_nt
+t8_sq	main	--isoseq --t 8 --batch_type read_lengths_squared
+wf_N0	write_fastq	--N 0
+wf_N2	write_fastq	--N 2
+wf_N10	write_fastq	--N 10
