@@ -100,7 +100,8 @@ that wrote it.
 | CLI contract captured | **done** | 14 cases in `bench/golden/cli/`, exit codes and stderr verbatim |
 | output goldens recorded | **done** | 27 cases in `bench/golden/manifest.tsv` |
 | determinism gate | **done, and it fails on Python ≤3.11** | `equivalence.sh seeds`; see *Finding 1* |
-| interpreter decision | **taken: pin ≥3.12, reference unmodified** | recorded in the golden manifest |
+| interpreter decision | **taken: pin ≥3.12, reference unmodified for *Finding 1*** | recorded in the golden manifest |
+| reference bug fixed upstream | **done — *Finding 9*'s `IndexError`** | its own commit on `master`; verified a no-op on 26 of 27 cases |
 | corpora | **done** | 8 registered, 1 committed; the old fixture was replaced after being measured blind (*Finding 5*) |
 | case matrix swept on all three corpora | **done** | `droso_20k` has 22 of 24 distinct results and **zero** unintended collisions — develop against it |
 | repository slimmed and pushed | **done** | 492 MB → fresh clone at 4.8 MB |
@@ -714,7 +715,7 @@ the wrong one shifts `error_rate` for exactly those reads.
 returns early if the sorted file already exists and the flag is set. So the logfile is emptied and
 never rewritten. Observable, and the harness will see it.
 
-### Finding 9 — `--q` above the corpus's quality crashes with an `IndexError`
+### Finding 9 — `--q` above the corpus's quality crashed with an `IndexError`. Fixed in the Python
 
 `error_rates[int(len(error_rates)/2)]` on a sorted list takes the upper middle element for even
 lengths, with no averaging. Reproduce it.
@@ -740,11 +741,25 @@ instead of "no reads passed the filter". `--q 12` is an entirely reasonable thin
 `--q 15` case runs fine on `droso_20k` — those reads are higher quality — and would have been
 recorded as a clean pass had `sirv_real_10k` not been swept. One corpus lies.
 
-The observable contract for the crashing case: `sorted.fastq` and `logfile.txt` are both created and
-left **empty** (the logfile is opened `'w'` before anything is read; the fastq is written before the
-statistics are computed), then exit 1. The port should reproduce the empty files and the non-zero
-exit. It should **not** try to reproduce a Python traceback — see the note on stdout under *Scope*;
-a message naming the problem is better and is a deliberate, recorded divergence in diagnostics only.
+**Fixed in the reference**, on `master`, as its own commit — this is method point 8, and the first
+time it has been applied in this port. The statistics are guarded; the tool now says
+`Error: no reads passed the quality filter (--q 12.0).` on stderr, notes the same in `logfile.txt`,
+and exits 1.
+
+The fix was scoped and then verified rather than assumed:
+
+| | |
+| --- | --- |
+| exit status | **unchanged at 1** — an unhandled exception already exited 1, so nothing checking the exit code sees a difference |
+| `sorted.fastq` | **unchanged**, still created and still empty |
+| `logfile.txt` | 0 bytes → one line of explanation. The only output byte that moved |
+| smoke corpus, all 27 cases | **byte-identical** before and after |
+| `sirv_real_10k`, all 27 cases | **only `q15` differs, and only in `logfile.txt`**; the other 26 byte-identical |
+
+That last row is the check worth copying: a bug fix in the reference is a behaviour change, so it has
+to be measured against the full matrix on a corpus that reaches it, not just against the case that
+crashed. The port therefore targets the fixed behaviour, and the goldens were re-recorded — which on
+the smoke corpus changed nothing at all.
 
 ### Finding 10 — harness bugs found while building the harness, both silent
 
@@ -938,11 +953,8 @@ Ordered by how much they matter.
    449).
 3. **`--medaka` crashes.** *Finding 2*. Either implement it or remove the flag.
 4. **`--d 0` divides by zero.** *Finding 2*. Move the modulo inside the truthiness guard.
-5. **`error_rates[0]` on an empty list.** *Finding 9*, and **measured on real data**: `--q 12` or
-   above on `sirv_real_10k` filters out all 10 000 reads and crashes with
-   `IndexError: list index out of range` instead of saying no reads passed. A three-line guard fixes
-   it. This is the most user-visible bug found so far — an ordinary, documented flag value on ordinary
-   ONT data — and it is worth fixing in the Python regardless of the port.
+5. ~~**`error_rates[0]` on an empty list.**~~ **Fixed** on `master`, its own commit, and merged to
+   `develop`. *Finding 9* has the measurements. The port targets the fixed behaviour.
 6. **The "mutually exclusive" and "needs both" validation paths exit 0.** A wrapper script cannot
    detect them. Changing them to exit non-zero is right and is a breaking change for anyone who
    depends on the current behaviour, which is presumably nobody.
@@ -1095,8 +1107,8 @@ want more.
 8. ~~Sweep the full case matrix on `droso_20k` and `sirv_real_10k`.~~ **Done, and it found a
    reference crash.** `droso_20k` discriminates every swept parameter (22 of 24 distinct, zero
    unintended collisions) and is the corpus to develop against; `sirv_real_10k` is weaker but is the
-   only one that exposed *Finding 9*, where `--q 12` and above crash with an `IndexError` on real ONT
-   reads. Keep both.
+   only one that exposed *Finding 9*, where `--q 12` and above crashed with an `IndexError` on real
+   ONT reads. Keep both. *Finding 9* is now fixed in the Python.
 9. **Port the CLI**, locked by unit tests and the 14 differential cases. Nine multi-word flags need
    explicit `long = "..."`; five are double-dash single-letter; argparse prefix abbreviation is live.
 10. **Write `bench/dump_reference.py`** and work outward from the leaves: `readfq`, the quality
