@@ -1,0 +1,18 @@
+# Committed by accident once and stripped from history by tools/repo-slim.
+# See PORTING.md, "Repo hygiene".
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# The extracted pre-rewrite test data. ~500 MB, and putting it back in git is
+# the one thing this repository must not do again.
+repo-slim-archive/
+
+# Rust build output.
+rust/target/
+
+# Harness scratch.
+bench/work/
+
+# Transient: the working-copy reconciliation after the history rewrite.
+.reconcile/
