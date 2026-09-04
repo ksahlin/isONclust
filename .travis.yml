@@ -19,6 +19,6 @@ branches:
   - master
   # - develop
 # command to run tests
-script: python isONclust --isoseq --fastq test/sample_alz_2k.fastq --outfolder test/out --t 1 
+script: python isONclust --ont --fastq test/sirv_sim_120.fastq --outfolder test/out --t 1 
 # after_success:
 #  - coveralls

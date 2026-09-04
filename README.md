@@ -86,11 +86,17 @@ cd isONclust
 
 ### Testing installation
 
-You can verify successul installation by running isONclust on this [small dataset](https://github.com/ksahlin/isONclust/tree/master/test/sample_alz_2k.fastq). Simply download the test dataset and run:
+You can verify successul installation by running isONclust on this [small dataset](https://github.com/ksahlin/isONclust/tree/master/test/sirv_sim_120.fastq). Simply download the test dataset and run:
 
 ```
-isONclust --fastq [test/sample_alz_2k.fastq] --outfolder [output path]
+isONclust --ont --fastq [test/sirv_sim_120.fastq] --outfolder [output path]
 ```
+
+The dataset is 120 simulated SIRV reads at 7% error covering 54 of the 68 SIRV
+transcripts, with the source transcript in each read header. With the default
+`--t 8` it produces 35 clusters, 21 of them with more than one read; with
+`--t 1` it produces 40 and 24. (`--t` selects a different clustering strategy,
+not just a thread count, so the two legitimately differ.)
 
 
 USAGE
