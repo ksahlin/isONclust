@@ -244,6 +244,22 @@ def main(args):
         reads_sorted_outfile.write("@{0}\n{1}\n+\n{2}\n".format(acc + "_{0}".format(score), seq, qual))
     reads_sorted_outfile.close()
     print(len(read_array), "reads passed quality critera (avg phred Q val over {0} and length > 2*k) and will be clustered.".format(args.quality_threshold))
+
+    if not read_array or not error_rates:
+        # Every read was filtered out. Without this guard the statistics below
+        # raise "IndexError: list index out of range" on error_rates[0], which
+        # is a traceback rather than an explanation. It is easy to reach: on
+        # 10 000 real ONT SIRV reads, --q 12 and above filter out everything
+        # (--q 11 leaves 2 reads), and --q 12 is a reasonable thing to ask for.
+        # Exit status is left at 1, which is what the traceback already gave,
+        # so nothing that checks the exit code sees a change.
+        logfile.write("No reads passed the quality filter (--q {0}).\n".format(args.quality_threshold))
+        logfile.close()
+        print("Error: no reads passed the quality filter (--q {0}).".format(args.quality_threshold),
+              file=sys.stderr)
+        print("Lower --q, or check that the input has quality values.", file=sys.stderr)
+        sys.exit(1)
+
     error_rates.sort()
     min_e = error_rates[0]
     max_e = error_rates[-1]
