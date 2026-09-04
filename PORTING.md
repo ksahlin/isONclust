@@ -102,6 +102,7 @@ that wrote it.
 | determinism gate | **done, and it fails on Python ≤3.11** | `equivalence.sh seeds`; see *Finding 1* |
 | interpreter decision | **taken: pin ≥3.12, reference unmodified** | recorded in the golden manifest |
 | corpora | **done** | 8 registered, 1 committed; the old fixture was replaced after being measured blind (*Finding 5*) |
+| case matrix swept on all three corpora | **done** | `droso_20k` has 22 of 24 distinct results and **zero** unintended collisions — develop against it |
 | repository slimmed and pushed | **done** | 492 MB → fresh clone at 4.8 MB |
 | CLI parity | not started | |
 | `readfq` | not started | |
@@ -432,8 +433,38 @@ have no quality spread. Two cases collide by design and should stay that way —
 pins that the preset resolves to `--k 13 --w 20`, and `t8` == `t8_total_nt` pins that `total_nt` is
 the default `--batch_type`.
 
-**What still needs sweeping:** the full case matrix on `droso_20k` and `sirv_real_10k`. Those are
-where `--q` and the mapping/alignment thresholds get their power, and where *Finding 4* is live.
+#### The matrices were swept, and `droso_20k` is the one to develop against
+
+The full 27-case matrix, recorded on all three corpora. The question asked of each: **do any two
+cases produce the same `final_clusters.tsv`?** A case that duplicates another is not a test.
+
+| corpus | main cases | distinct results | unintended collisions | wall clock |
+| --- | --- | --- | --- | --- |
+| `smoke` (120 reads) | 24 | 15 | 2 | 12 s |
+| `sirv_real_10k` | 23 | 17 | 2 | 1 m 41 s |
+| **`droso_20k`** | **24** | **22** | **0** | 6 m 25 s |
+
+Two collisions are intended on every corpus and must stay: `ont` == `k13w20` pins that the preset
+resolves to `--k 13 --w 20`, and `t8` == `t8_total_nt` pins that `total_nt` is the default
+`--batch_type`.
+
+**`droso_20k` has no unintended collisions at all.** Every one of the 22 remaining cases produces a
+result no other case produces, so every swept parameter is observable in output. That makes it the
+corpus to develop the port against. What the weaker corpora hide:
+
+| collision | on | why it hides something |
+| --- | --- | --- |
+| `default` == `q0` == `q15` == `mapped0.95` == `min_fraction0.5` == `min_fraction1.0` == `min_prob0.5` | `smoke` | simulated reads at one fixed error rate have no quality spread, so `--q` does nothing, and the thresholds never bind |
+| `default` == `mapped0.95` == `min_fraction0.5` == `min_fraction1.0` | `sirv_real_10k` | the mapped fraction is near 1 on this data, so tightening the threshold changes nothing |
+| `aligned0.9` == `k20w100`, `mapped0.3` == `min_prob0.01` | `smoke`, `sirv_real_10k` | coincidence at small scale |
+
+`sirv_real_10k` is not redundant despite being weaker: it is the only corpus that found *Finding 9*,
+because it is the only one whose reads are low-quality enough for `--q 12` to filter everything out.
+`droso_20k`'s `--q 15` case passes cleanly. **Keep both.** This is method rule "weight the corpus by
+its statistical power" and "three corpora, because one lies", arriving in the same afternoon.
+
+Recording cost, for planning: 6 m 25 s for droso, and its manifest is 1.0 MB because `wf_N0` writes
+9255 files. Neither is committed — goldens are per-corpus and recorded on demand.
 
 ### Stage-level oracles are required, not optional
 
@@ -683,12 +714,37 @@ the wrong one shifts `error_rate` for exactly those reads.
 returns early if the sorted file already exists and the flag is set. So the logfile is emptied and
 never rewritten. Observable, and the harness will see it.
 
-### Finding 9 — `logfile.txt`'s median is not a median
+### Finding 9 — `--q` above the corpus's quality crashes with an `IndexError`
 
 `error_rates[int(len(error_rates)/2)]` on a sorted list takes the upper middle element for even
-lengths, with no averaging. Reproduce it. And if every read is filtered out, `error_rates[0]` raises
-`IndexError` — an empty or entirely low-quality input crashes rather than reporting nothing to do.
-Not yet in the case matrix; it needs a fixture.
+lengths, with no averaging. Reproduce it.
+
+The more serious half was written up as "needs a fixture" and then **the `sirv_real_10k` sweep hit
+it**: if every read is filtered out, `min_e = error_rates[0]` raises `IndexError` on an empty list.
+Measured, on real SIRV ONT reads:
+
+| `--q` | exit | reads passing |
+| --- | --- | --- |
+| 7 (default) | 0 | 9 972 |
+| 8 | 0 | 8 407 |
+| 9 | 0 | 4 433 |
+| 10 | 0 | 369 |
+| 11 | 0 | **2** |
+| 12 | **1** | 0 |
+| 15 | **1** | 0 |
+
+So a user who raises `--q` to be stricter on ONT data gets `IndexError: list index out of range`
+instead of "no reads passed the filter". `--q 12` is an entirely reasonable thing to ask for.
+
+**And it is corpus-dependent, which is the point of having more than one corpus.** The same
+`--q 15` case runs fine on `droso_20k` — those reads are higher quality — and would have been
+recorded as a clean pass had `sirv_real_10k` not been swept. One corpus lies.
+
+The observable contract for the crashing case: `sorted.fastq` and `logfile.txt` are both created and
+left **empty** (the logfile is opened `'w'` before anything is read; the fastq is written before the
+statistics are computed), then exit 1. The port should reproduce the empty files and the non-zero
+exit. It should **not** try to reproduce a Python traceback — see the note on stdout under *Scope*;
+a message naming the problem is better and is a deliberate, recorded divergence in diagnostics only.
 
 ### Finding 10 — harness bugs found while building the harness, both silent
 
@@ -706,9 +762,26 @@ arguments and recorded the same default output.** The harness reported 27 passes
 per case was a plausible 10. The tell was the case names in the log having the arguments concatenated
 onto them — visible, and easy to read past.
 
-Both are now guarded: `check_cases` refuses to run if any case line is not tab-separated into three
-fields, and the `verify` path has been demonstrated to catch a **single digit** changed in one field
-of one line out of 1240, reporting the file, line, column and magnitude.
+**Two goldens contained run-varying data, so they could never match anything.** Found by noticing
+that `git status` was dirty immediately after a re-record. `bench/golden/cli/medaka/stdout` held a
+`tempfile.mkdtemp()` path (`/var/folders/.../tmpybxe1c8f`), and `manifest.tsv` held its own
+`# recorded:` wall-clock line. A golden like that is not a check — it is a permanent failure, and a
+permanent failure trains you to ignore the harness. The temp path is now scrubbed to `<TMPDIR>`
+alongside the timings, and the manifest carries no timestamp (git records when it was committed; what
+matters for validity is the corpus hash and the interpreter, which are still there).
+
+All three are now guarded:
+
+| guard | catches |
+| --- | --- |
+| `check_cases` | a case line that is not tab-separated into three fields |
+| `equivalence.sh stable` | a golden containing a timestamp, temp path, PID or duration — records twice and diffs |
+| `equivalence.sh verify` | demonstrated on **a single digit** changed in one field of one line out of 1240, reporting file, line, column and magnitude |
+| `equivalence.sh dropped` | demonstrated against three stand-ins: refuses-and-names passes, accepts-and-ignores fails, refuses-vaguely fails |
+| `equivalence.sh seeds` | demonstrated to fail on Python 3.11 |
+
+Three harness bugs, all three reporting passes. The gates above exist because of them, and each was
+verified to fail before being trusted.
 
 The general rule this earns is in *Method* below: a harness that has never failed has not been tested,
 it has only been run.
@@ -865,8 +938,11 @@ Ordered by how much they matter.
    449).
 3. **`--medaka` crashes.** *Finding 2*. Either implement it or remove the flag.
 4. **`--d 0` divides by zero.** *Finding 2*. Move the modulo inside the truthiness guard.
-5. **`error_rates[0]` on an empty list.** *Finding 9*. An input where every read is filtered crashes
-   with `IndexError` instead of reporting that nothing survived.
+5. **`error_rates[0]` on an empty list.** *Finding 9*, and **measured on real data**: `--q 12` or
+   above on `sirv_real_10k` filters out all 10 000 reads and crashes with
+   `IndexError: list index out of range` instead of saying no reads passed. A three-line guard fixes
+   it. This is the most user-visible bug found so far — an ordinary, documented flag value on ordinary
+   ONT data — and it is worth fixing in the Python regardless of the port.
 6. **The "mutually exclusive" and "needs both" validation paths exit 0.** A wrapper script cannot
    detect them. Changing them to exit non-zero is right and is a breaking change for anyone who
    depends on the current behaviour, which is presumably nobody.
@@ -1016,9 +1092,11 @@ want more.
    window (*Finding 5*). `bench/corpora.tsv` registers 8; one is committed.
 7. **Commit the work.** The push replaced origin's history, so everything in this session's tree is
    untracked relative to it. Proposed commits are listed below.
-8. **Sweep the full case matrix on `droso_20k` and `sirv_real_10k`.** The smoke fixture cannot
-   exercise `--q` or the permissive thresholds, and `droso_20k` is the only corpus that reaches
-   *Finding 4*. Do this before writing Rust, so the contract is known where it is actually load-bearing.
+8. ~~Sweep the full case matrix on `droso_20k` and `sirv_real_10k`.~~ **Done, and it found a
+   reference crash.** `droso_20k` discriminates every swept parameter (22 of 24 distinct, zero
+   unintended collisions) and is the corpus to develop against; `sirv_real_10k` is weaker but is the
+   only one that exposed *Finding 9*, where `--q 12` and above crash with an `IndexError` on real ONT
+   reads. Keep both.
 9. **Port the CLI**, locked by unit tests and the 14 differential cases. Nine multi-word flags need
    explicit `long = "..."`; five are double-dash single-letter; argparse prefix abbreviation is live.
 10. **Write `bench/dump_reference.py`** and work outward from the leaves: `readfq`, the quality

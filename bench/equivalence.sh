@@ -9,6 +9,7 @@
 #   bench/equivalence.sh record   # record goldens from the reference
 #   bench/equivalence.sh verify   # run the port, diff against the goldens
 #   bench/equivalence.sh dropped  # the port must refuse the out-of-scope flags
+#   bench/equivalence.sh stable   # recording twice must give identical goldens
 #   bench/equivalence.sh all      # everything
 #
 # Environment:
@@ -155,7 +156,7 @@ cli_case() { # cli_case <name> <args...>
     "$REF_PYTHON" isONclust "$@" >"$d/stdout" 2>"$d/stderr"; echo $? >"$d/exit"
     set -e
     # Paths and timings are not contract; scrub them so the golden is portable.
-    sed -i.bak -E 's#/[^ ]*/(isONclust|sirv_sim_120)#<PATH>/\1#g; s/[0-9]+\.[0-9]{4,}/<TIME>/g' "$d/stdout" "$d/stderr"
+    sed -i.bak -E 's#(/private)?(/var/folders/[^ ]*|/tmp/[^ ]*)#<TMPDIR>#g; s#/[^ ]*/(isONclust|sirv_sim_120)#<PATH>/\1#g; s/[0-9]+\.[0-9]{4,}/<TIME>/g' "$d/stdout" "$d/stderr"
     rm -f "$d"/*.bak
     ok "recorded cli/$name (exit $(cat "$d/exit"))"
   else
@@ -163,7 +164,7 @@ cli_case() { # cli_case <name> <args...>
     set +e
     "$PORT_BIN" "$@" >"$WORK/o" 2>"$WORK/e"; local rc=$?
     set -e
-    sed -i.bak -E 's#/[^ ]*/(isONclust|sirv_sim_120)#<PATH>/\1#g; s/[0-9]+\.[0-9]{4,}/<TIME>/g' "$WORK/o" "$WORK/e"
+    sed -i.bak -E 's#(/private)?(/var/folders/[^ ]*|/tmp/[^ ]*)#<TMPDIR>#g; s#/[^ ]*/(isONclust|sirv_sim_120)#<PATH>/\1#g; s/[0-9]+\.[0-9]{4,}/<TIME>/g' "$WORK/o" "$WORK/e"
     if [[ "$rc" == "$(cat "$d/exit")" ]] && diff -q "$WORK/e" "$d/stderr" >/dev/null; then
       ok "cli/$name"
     else
@@ -252,7 +253,9 @@ cmd_record() {
   # The reference is 2 seconds a case; the storage is not worth it.
   {
     echo "# isONclust reference goldens -- per-file sha256"
-    echo "# recorded: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "# No timestamp on purpose: it made this file differ on every re-record,"
+    echo "# which leaves git permanently dirty and hides real changes in the noise."
+    echo "# git records when it was committed; what matters for validity is below."
     echo "# corpus:   $(basename "$CORPUS")  sha256 $(shasum -a 256 "$CORPUS" | cut -d' ' -f1)"
     "$REF_PYTHON" -c "import sys,parasail,pysam; print(f'# reference: python {sys.version.split()[0]}, pysam {pysam.__version__}, parasail 1.3.4')"
     "$REF_PYTHON" -c "xs=[0.1]*10+[1e17,-1e17]; print('# sum():    ' + ('compensated (>=3.12)' if sum(xs)==sum(reversed(xs)) else 'NAIVE (<=3.11) -- these goldens are NOT reproducible'))"
@@ -385,6 +388,34 @@ cmd_dropped() {
     fi
   done
 }
+
+# ---------------------------------------------------------------------------
+# Recording twice must give the same goldens. A golden containing a timestamp, a
+# temp path, a PID or a duration can never be matched by anything -- including
+# the reference itself -- so it is not a check, it is a permanent failure that
+# trains you to ignore the harness. Two got through: a `tempfile.mkdtemp()` path
+# in the --consensus stdout, and the manifest's own "recorded:" line.
+
+cmd_stable() {
+  echo "==> recording twice must be byte-identical"
+  local a="$WORK/stable_a" b="$WORK/stable_b"
+  GOLDEN="$a" cmd_record >/dev/null 2>&1
+  GOLDEN="$a" cmd_cli record >/dev/null 2>&1
+  GOLDEN="$b" cmd_record >/dev/null 2>&1
+  GOLDEN="$b" cmd_cli record >/dev/null 2>&1
+  local unstable
+  unstable="$(diff -rq "$a" "$b" 2>&1 || true)"
+  if [[ -z "$unstable" ]]; then
+    ok "goldens are reproducible across two recordings"
+  else
+    bad "goldens are NOT reproducible -- these contain run-varying data:"
+    sed 's/^/          /' <<<"$unstable" | head -8
+    while read -r _ f1 _ _; do
+      [[ -f "$f1" ]] || continue
+      diff "$f1" "${f1/$a/$b}" 2>/dev/null | grep -E '^[<>]' | head -2 | sed 's/^/            /'
+    done <<<"$unstable"
+  fi
+}
 # ---------------------------------------------------------------------------
 
 case "${1:-all}" in
@@ -394,8 +425,9 @@ case "${1:-all}" in
   record)  cmd_record ;;
   verify)  cmd_verify ;;
   dropped) cmd_dropped ;;
-  all)     cmd_env; cmd_seeds; cmd_cli record; cmd_record; cmd_verify; cmd_dropped ;;
-  *) echo "usage: $0 {env|seeds|cli [record|verify]|record|verify|dropped|all}" >&2; exit 2 ;;
+  stable)  cmd_stable ;;
+  all)     cmd_env; cmd_seeds; cmd_cli record; cmd_record; cmd_stable; cmd_verify; cmd_dropped ;;
+  *) echo "usage: $0 {env|seeds|cli [record|verify]|record|verify|dropped|stable|all}" >&2; exit 2 ;;
 esac
 
 echo

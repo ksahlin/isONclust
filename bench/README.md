@@ -27,6 +27,7 @@ bench/equivalence.sh cli record
 bench/equivalence.sh record
 bench/equivalence.sh verify   # needs rust/target/release/isONclust
 bench/equivalence.sh dropped  # the port must refuse the out-of-scope flags
+bench/equivalence.sh stable   # recording twice must give identical goldens
 ```
 
 Override with `REF_PYTHON`, `PORT_BIN`, `CORPUS`, `GOLDEN`.
@@ -69,6 +70,10 @@ REF_PYTHON=~/miniforge3/envs/isonclust-ref-311/bin/python bench/equivalence.sh s
 
 The third matters because "unrecognised argument" is the easy thing for a port to emit and is not
 actionable for someone whose pipeline passes `--consensus`.
+
+A fourth gate, `stable`, exists because two goldens contained run-varying data — a `mkdtemp` path and
+a wall-clock timestamp — and so could never have matched anything. It records twice and diffs. Run it
+after touching the scrub patterns in `equivalence.sh`.
 
 ## Corpora
 
