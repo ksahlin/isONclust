@@ -1,0 +1,12 @@
+usage: isONclust [-h] [--version] [--fastq FASTQ] [--flnc FLNC] [--ccs CCS]
+                 [--t NR_CORES] [--d PRINT_OUTPUT] [--q QUALITY_THRESHOLD]
+                 [--ont] [--isoseq] [--use_old_sorted_file] [--consensus]
+                 [--abundance_ratio ABUNDANCE_RATIO]
+                 [--rc_identity_threshold RC_IDENTITY_THRESHOLD] [--medaka]
+                 [--k K] [--w W] [--min_shared MIN_SHARED]
+                 [--mapped_threshold MAPPED_THRESHOLD]
+                 [--aligned_threshold ALIGNED_THRESHOLD]
+                 [--batch_type BATCH_TYPE] [--min_fraction MIN_FRACTION]
+                 [--min_prob_no_hits MIN_PROB_NO_HITS] [--outfolder OUTFOLDER]
+                 {write_fastq} ...
+isONclust: error: argument --k: expected one argument

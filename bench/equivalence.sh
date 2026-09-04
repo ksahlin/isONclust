@@ -147,6 +147,22 @@ cmd_seeds() {
 # argument. That is the contract, warts included; do not "fix" it in the port
 # without giving the divergence its own commit and a note in PORTING.md.
 
+
+# Two different reasons a CLI case cannot pass, kept apart on purpose. Calling
+# them both "pending" would hide the fact that one of them will never resolve.
+#
+# PENDING: the invocation is valid, so the reference goes on to run the tool.
+# These pass once the clustering stages exist. `abbrev_outf` is deliberately NOT
+# here: --k 99 with the default --w 50 fails the window check, so it never
+# reaches a stage and is checkable today.
+CLI_NEEDS_STAGES=" d_zero ont_over_k k_then_ont isoseq_over_w "
+
+# DIVERGENT BY DESIGN: --medaka is a dropped flag (PORTING.md, Scope). The port
+# refuses it with exit 2 naming the flag; the reference runs on and dies with an
+# UnboundLocalError, exit 1. This golden can never match and is not supposed to.
+# The port's actual contract for it is asserted by `equivalence.sh dropped`.
+CLI_DIVERGENT=" medaka "
+
 cli_case() { # cli_case <name> <args...>
   local name="$1"; shift
   local d="$GOLDEN/cli/$name"
@@ -161,16 +177,41 @@ cli_case() { # cli_case <name> <args...>
     ok "recorded cli/$name (exit $(cat "$d/exit"))"
   else
     [[ -f "$d/exit" ]] || { bad "no golden for cli/$name -- re-run: equivalence.sh cli record"; return; }
+    if [[ "$CLI_NEEDS_STAGES" == *" $name "* ]]; then
+      info "pending cli/$name -- valid invocation, needs the clustering stages"
+      return 0
+    fi
+    if [[ "$CLI_DIVERGENT" == *" $name "* ]]; then
+      info "divergent by design cli/$name -- dropped flag; see 'equivalence.sh dropped'"
+      return 0
+    fi
     set +e
     "$PORT_BIN" "$@" >"$WORK/o" 2>"$WORK/e"; local rc=$?
     set -e
     sed -i.bak -E 's#(/private)?(/var/folders/[^ ]*|/tmp/[^ ]*)#<TMPDIR>#g; s#/[^ ]*/(isONclust|sirv_sim_120)#<PATH>/\1#g; s/[0-9]+\.[0-9]{4,}/<TIME>/g' "$WORK/o" "$WORK/e"
-    if [[ "$rc" == "$(cat "$d/exit")" ]] && diff -q "$WORK/e" "$d/stderr" >/dev/null; then
+    # stdout is compared too, not just stderr: --help, --version and the four
+    # validation messages all go to stdout, and they are the bulk of the
+    # contract. Timings and temp paths are scrubbed on both sides, and
+    # `equivalence.sh stable` proves what is left is reproducible.
+    local want_rc; want_rc="$(cat "$d/exit")"
+    local bad_parts=()
+    [[ "$rc" == "$want_rc" ]] || bad_parts+=("exit $rc want $want_rc")
+    diff -q "$WORK/e" "$d/stderr" >/dev/null || bad_parts+=("stderr")
+    diff -q "$WORK/o" "$d/stdout" >/dev/null || bad_parts+=("stdout")
+    if [[ ${#bad_parts[@]} -eq 0 ]]; then
       ok "cli/$name"
     else
-      bad "cli/$name (exit $rc, want $(cat "$d/exit"))"
-      diff "$d/stderr" "$WORK/e" | head -6 | sed 's/^/          /'
+      bad "cli/$name: ${bad_parts[*]}"
+      for w in stderr stdout; do
+        local tmp="$WORK/${w:3:1}"
+        diff -q "$tmp" "$d/$w" >/dev/null 2>&1 && continue
+        diff "$d/$w" "$tmp" 2>/dev/null | head -5 | sed "s/^/          $w| /" || true
+      done
     fi
+    # cli_case is called at top level under `set -e`. Without this, the exit
+    # status of the last command above becomes the function's, and a failing
+    # case aborts the whole run -- which is how 28 cases came to report 1.
+    return 0
   fi
 }
 
@@ -199,6 +240,27 @@ cmd_cli() {
   # multi-word flag needs an explicit long name or clap renames it.
   cli_case abbrev_outf  --fastq "$CORPUS" --outfold "$WORK/ab" --t 1 --k 99
   cli_case wf_help      write_fastq --help
+  # --- argparse error paths. All exit 2 with the same fixed 11-line usage block
+  # --- plus one distinguishing final line. A hand-written parser gets these
+  # --- wrong by default, so they are contract, not decoration.
+  cli_case bad_int      --k abc --fastq "$CORPUS"
+  cli_case bad_float    --q xyz --fastq "$CORPUS"
+  cli_case bad_int_t    --t 1.5 --fastq "$CORPUS"
+  cli_case missing_val  --fastq "$CORPUS" --k
+  cli_case ambiguous_f  --f "$CORPUS"
+  cli_case ambiguous_m  --m 5 --fastq "$CORPUS"
+  cli_case bad_subcmd   bogus_subcmd
+  cli_case wf_stray_flag write_fastq --k 5
+  cli_case h_short      -h
+  # --- action ordering: --version and -h fire during parsing and win over
+  # --- everything, including arguments that would otherwise fail.
+  cli_case version_wins --version --fastq /nope --k abc
+  cli_case help_wins    --fastq /nope -h
+  # --- the presets OVERWRITE an explicit --k/--w regardless of order. Without
+  # --- that, --ont --k 99 would be k=99 w=20 and fail the w<k check.
+  cli_case ont_over_k   --ont --k 99 --fastq "$CORPUS" --outfolder "$WORK/ok1" --t 1
+  cli_case k_then_ont   --k 99 --ont --fastq "$CORPUS" --outfolder "$WORK/ok2" --t 1
+  cli_case isoseq_over_w --isoseq --w 7 --fastq "$CORPUS" --outfolder "$WORK/ok3" --t 1
 }
 
 # ---------------------------------------------------------------------------
@@ -278,6 +340,12 @@ cmd_record() {
         >> "$GOLDEN/manifest.tsv"
       nf=$((nf+1))
     done < <(cd "$d" && find . -type f | sed 's|^\./||' | LC_ALL=C sort)
+    # One meta row per case, ALWAYS. A case that legitimately writes no files
+    # (wf_N10 on a corpus with no cluster of 10+ reads) otherwise contributes no
+    # rows at all, and `verify` then finds no expected exit code, reports "no
+    # golden" and silently skips it -- neither pass nor fail. The port could do
+    # anything there and nothing would say so.
+    printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$rc" "__meta__" "files=$nf" "0" >> "$GOLDEN/manifest.tsv"
     # Keep ONE case's small files verbatim, so there is something to read by eye
     # without running anything. sorted.fastq and final_cluster_origins.tsv are
     # excluded by size; their hashes are in the manifest like everything else.
@@ -307,8 +375,9 @@ cmd_verify() {
     [[ "$name" =~ ^# ]] && continue
     [[ -z "${name// }" ]] && continue
     local d="$WORK/port/$name"
-    local want_exit; want_exit="$(awk -F'\t' -v n="$name" '$1==n {print $2; exit}' "$GOLDEN/manifest.tsv")"
-    [[ -n "$want_exit" ]] || { info "no golden for $name"; continue; }
+    local want_exit; want_exit="$(awk -F'\t' -v n="$name" '$1==n && $3=="__meta__" {print $2; exit}' "$GOLDEN/manifest.tsv")"
+    [[ -n "$want_exit" ]] || { bad "no golden for $name -- re-run: equivalence.sh record"; continue; }
+    local want_files; want_files="$(awk -F'\t' -v n="$name" '$1==n && $3=="__meta__" {sub(/^files=/,"",$4); print $4; exit}' "$GOLDEN/manifest.tsv")"
     local rc; rc="$(run_case "$name" "$entry" "$args" "$PORT_BIN" "$d")"
 
     local mismatched=() missing=()
@@ -316,12 +385,15 @@ cmd_verify() {
       if [[ ! -f "$d/$rel" ]]; then missing+=("$rel"); continue; fi
       local got; got="$(shasum -a 256 "$d/$rel" | cut -d' ' -f1)"
       [[ "$got" == "$want_sha" ]] || mismatched+=("$rel")
-    done < <(awk -F'\t' -v n="$name" '$1==n {print $3"\t"$4"\t"$5}' "$GOLDEN/manifest.tsv")
+    done < <(awk -F'\t' -v n="$name" '$1==n && $3!="__meta__" {print $3"\t"$4"\t"$5}' "$GOLDEN/manifest.tsv")
+
+    local got_files; got_files="$(cd "$d" 2>/dev/null && find . -type f | wc -l | tr -d ' ')"
+    [[ "${got_files:-0}" == "$want_files" ]] || mismatched+=("file count: got ${got_files:-0}, want $want_files")
 
     # A file the port writes that the reference does not is also a failure.
     local extra=()
     while IFS= read -r rel; do
-      awk -F'\t' -v n="$name" -v r="$rel" '$1==n && $3==r {found=1} END {exit !found}' \
+      awk -F'\t' -v n="$name" -v r="$rel" '$1==n && $3!="__meta__" && $3==r {found=1} END {exit !found}' \
         "$GOLDEN/manifest.tsv" || extra+=("$rel")
     done < <(cd "$d" 2>/dev/null && find . -type f | sed 's|^\./||' | LC_ALL=C sort)
 

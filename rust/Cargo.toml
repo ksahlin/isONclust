@@ -1,0 +1,27 @@
+[package]
+name = "isonclust"
+# Cargo requires semver; the reference's version is "0.0.6.1", which has four
+# components and is not valid here. The user-visible string is frozen in
+# src/text.rs as VERSION and is what `--version` prints, so this number is
+# internal only. Do not "fix" --version to read from CARGO_PKG_VERSION.
+version = "0.0.6"
+edition = "2021"
+rust-version = "1.74"
+description = "De novo clustering of long-read transcriptome reads (Rust port of isONclust)"
+license = "GPL-3.0"
+
+# The binary must be named exactly `isONclust`. Three capitals, and macOS is
+# case-insensitive by default, so a wrong spelling resolves locally and fails
+# the first time it meets an ext4 filesystem. isONform's CI lost a day to
+# exactly this (PORTING.md, method: "a check that runs on one machine measures
+# that machine").
+[[bin]]
+name = "isONclust"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

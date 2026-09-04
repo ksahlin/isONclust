@@ -105,7 +105,7 @@ that wrote it.
 | corpora | **done** | 8 registered, 1 committed; the old fixture was replaced after being measured blind (*Finding 5*) |
 | case matrix swept on all three corpora | **done** | `droso_20k` has 22 of 24 distinct results and **zero** unintended collisions — develop against it |
 | repository slimmed and pushed | **done** | 492 MB → fresh clone at 4.8 MB |
-| CLI parity | not started | |
+| CLI parity | **done** | 23 differential cases green on the first run, 17 unit tests, clippy `-D warnings` and `cargo fmt` clean |
 | `readfq` | not started | |
 | quality scoring + score sort (`sorted.fastq`) | not started | |
 | `get_kmer_minimizers` | not started | needs a dump oracle regardless, but the corpus can now see it (*Finding 5*) |
@@ -115,7 +115,7 @@ that wrote it.
 | `reads_to_clusters` (the driver) | not started | |
 | output writers, cluster ordering | not started | |
 | `parallelize.parallel_clustering` (`--t > 1`) | not started | semantic, not a speed knob; *Finding 3* |
-| `write_fastq` | not started | |
+| `write_fastq` | CLI only | parsing and its error paths are verified; the file-writing is not ported |
 | `--consensus` (spoa + RC detection) | **dropped — will not be implemented** | *Scope*. `equivalence.sh dropped` asserts non-zero exit and the flag named |
 | `--ccs`/`--flnc` (BAM input) | not started | needs a BAM reader; *Scope* |
 
@@ -777,6 +777,14 @@ arguments and recorded the same default output.** The harness reported 27 passes
 per case was a plausible 10. The tell was the case names in the log having the arguments concatenated
 onto them — visible, and easy to read past.
 
+**A case that writes no files was silently skipped.** `wf_N10` asks for clusters of 10+ reads and
+the smoke corpus has none, so the case legitimately produces zero files — and therefore contributed
+zero rows to the hash manifest. `verify` looked up its expected exit code, found nothing, reported
+`no golden for wf_N10` and moved on: **neither a pass nor a failure**. 26 of 27 cases failed and the
+27th was invisible. The port could have done anything there. Fixed by writing one `__meta__` row per
+case unconditionally, carrying the exit code and the file count, so "no golden" now means genuinely
+absent and is itself a failure.
+
 **Two goldens contained run-varying data, so they could never match anything.** Found by noticing
 that `git status` was dirty immediately after a re-record. `bench/golden/cli/medaka/stdout` held a
 `tempfile.mkdtemp()` path (`/var/folders/.../tmpybxe1c8f`), and `manifest.tsv` held its own
@@ -795,8 +803,13 @@ All three are now guarded:
 | `equivalence.sh dropped` | demonstrated against three stand-ins: refuses-and-names passes, accepts-and-ignores fails, refuses-vaguely fails |
 | `equivalence.sh seeds` | demonstrated to fail on Python 3.11 |
 
-Three harness bugs, all three reporting passes. The gates above exist because of them, and each was
-verified to fail before being trusted.
+**A failing case aborted the whole run.** `cli_case` ended with a diff whose non-zero status became
+the function's return value, and under `set -e` that killed the script. The first CLI verify reported
+one failure out of 28 cases; the other 27 had not run. Fixed with an explicit `return 0`.
+
+Four harness bugs, every one of them reporting something other than the truth — three reported
+passes, the fourth reported a single failure and hid 27 unrun cases. The gates below exist because of
+them, and each was verified to fail before being trusted.
 
 The general rule this earns is in *Method* below: a harness that has never failed has not been tested,
 it has only been run.
