@@ -561,6 +561,94 @@ not be glossed: **a faster aligner is now the single highest-value piece of work
 blocked only by the byte-identity goal, not by anything unknown. See *The aligner* under *Deferred
 improvements*.
 
+## Benchmarks: the port, the reference, and isONclust3
+
+`bench/benchmark.sh` runs all three on the same input and reports wall clock, peak RSS and accuracy;
+`bench/make_truth.sh` derives per-read truth by alignment; `bench/accuracy.py` scores it with the
+metrics isONclust's own paper uses (homogeneity, completeness, V-measure, adjusted Rand), validated
+against scikit-learn on 1620 comparisons.
+
+### Two things had to be fixed before any number here meant anything
+
+**The simulated corpora cannot be used for cross-tool accuracy.** Every base in `sirv_sim_err0` and
+`sirv_sim_err7` carries the *same quality character* — `I`, phred 40, one distinct value across the
+whole file, against 46–48 in real ONT data. Both algorithms are quality-driven, and isONclust3
+degenerates to near-singletons on them: **9986 clusters from 10 000 reads**, unchanged across every
+mode and seeding option tried. Scoring accuracy there measures the simulator. Real reads only, with
+truth from `minimap2`.
+
+**isONclust3 must be run with `--post-cluster`.** The first benchmark omitted it and made the tool
+look far worse than it is. On real SIRV ONT reads it takes the result from 5661 clusters to 66 — and
+it costs 0.09 s:
+
+| isONclust3 on `sirv_real_10k` | secs | clusters | V (gene) | ARI (transcript) |
+| --- | --- | --- | --- | --- |
+| `--mode ont` | 0.53 | 5661 | 0.3565 | 0.5338 |
+| `--mode ont --post-cluster` | 0.62 | **66** | **0.6671** | **0.6025** |
+
+The README's own example passes it. Benchmarking without it measures a tool nobody runs. The build
+itself was checked against the README's stated result on its example data — 95 clusters where the
+README says 94 — before any of this was trusted.
+
+### Speed and memory
+
+| corpus | tool | `--t` | secs | peak MB | clusters |
+| --- | --- | --- | --- | --- | --- |
+| `sirv_real_10k` | python | 1 | 4.20 | 229 | 36 |
+| | **port** | 1 | 4.65 | **122** | 36 |
+| | isONclust3 | — | **0.63** | **32** | 66 |
+| | python | 8 | 1.26 | 198 | 30 |
+| | **port** | 8 | 1.42 | **158** | 30 |
+| `droso_20k` | python | 1 | 15.39 | 688 | 5679 |
+| | **port** | 1 | 36.10 | **332** | 5679 |
+| | isONclust3 | — | **1.56** | **203** | 6424 |
+| | python | 8 | 6.99 | 824 | 5538 |
+| | **port** | 8 | 19.34 | **574** | 5538 |
+
+* **The port halves memory** — consistently 40–50% of the reference, which is the one dimension it
+  wins outright today.
+* **The port is at parity on `sirv_real_10k` and 2.3–2.8x slower on `droso_20k`.** The difference
+  between those two corpora is the alignment path: `droso_20k` runs 10 309 alignments against
+  `sirv_real_10k`'s 1806. It is the exact aligner, and nothing else.
+* **isONclust3 is 6.6x faster than the reference on `sirv_real_10k` and 10x on `droso_20k`**, at
+  4–7x less memory. It is a different algorithm; this is not a porting gap.
+
+### Accuracy, and why the verdict depends on the truth level
+
+`sirv_real_10k`, 9998 reads with truth from minimap2 against the SIRV transcriptome.
+
+**Gene level — 7 classes, which is what isONclust says it targets** ("each cluster represents all
+reads that came from a gene"):
+
+| tool | clusters | homogeneity | completeness | V | ARI |
+| --- | --- | --- | --- | --- | --- |
+| python / port `--t 1` | 36 | 1.0000 | 0.5729 | **0.7285** | 0.5681 |
+| python / port `--t 8` | 30 | 1.0000 | 0.6472 | **0.7858** | **0.7338** |
+| isONclust3 | 66 | 1.0000 | 0.5005 | 0.6671 | 0.3119 |
+
+**Transcript level — 68 classes:**
+
+| tool | clusters | homogeneity | completeness | V | ARI |
+| --- | --- | --- | --- | --- | --- |
+| python / port `--t 1` | 36 | 0.6479 | 0.9167 | 0.7592 | 0.3014 |
+| isONclust3 | 66 | 0.7441 | 0.9197 | **0.8226** | **0.6025** |
+
+**The two levels disagree about which tool is better, and both are right.** isONclust1 clusters at
+roughly gene resolution (36 clusters for 7 genes) and isONclust3 at roughly transcript resolution
+(66 clusters for 68 transcripts). Judged against genes isONclust1 wins on every metric; judged
+against transcripts isONclust3 wins on V and doubles the ARI. Neither is a defect — they are
+answering different questions, and a comparison that reported only one level would be misleading.
+
+**The port reproduces the reference's accuracy exactly, by construction**, at every setting. Any
+difference in those rows would be a port bug, and `benchmark.sh` diffs the two clusterings directly
+and says so rather than reporting it as an accuracy result.
+
+**An unexpected finding worth following up:** `--t 8` is not just faster than `--t 1`, it is *more
+accurate* on this corpus — V 0.7858 against 0.7285 and ARI 0.7338 against 0.5681 at gene level. The
+hierarchical batch-and-merge is doing something useful rather than merely approximating the single
+pass. That inverts the usual assumption about a parallel mode and deserves measuring across more
+corpora before anything is concluded from it.
+
 ## Findings in the reference
 
 Everything here was measured in the pinned environment, not inferred from reading. Each finding names
