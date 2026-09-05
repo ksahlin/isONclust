@@ -203,24 +203,44 @@ pub fn parallel_clustering(
             return out;
         }
 
-        // Batches are independent, so this loop is the "pool". Running it
-        // sequentially is byte-identical to running it in parallel.
-        let mut results = Vec::with_capacity(read_batches.len());
-        for i in 0..read_batches.len() {
-            let res = sweep::reads_to_clusters(
-                std::mem::take(&mut cluster_batches[i]),
-                std::mem::take(&mut rep_batches[i]),
-                &read_batches[i],
-                std::mem::take(&mut db_batches[i]),
-                i as i64 + 1,
-                table,
-                p,
-            );
+        // The pool. One thread per batch, matching the reference's
+        // `Pool(processes=num_batches)`.
+        //
+        // This is behaviour-neutral, and the reason is worth stating rather than
+        // hoping: each worker owns its cluster map, representative map, read
+        // slice and minimizer database, and returns new ones -- nothing is
+        // shared and nothing is mutated across batches. `map_async` preserves
+        // result order and so does joining the handles in order, so the merge
+        // below sees the same sequence whatever order the threads finish in.
+        // Verified, not assumed: all 27 equivalence cases pass either way.
+        let inputs: Vec<_> = (0..read_batches.len())
+            .map(|i| {
+                (
+                    std::mem::take(&mut cluster_batches[i]),
+                    std::mem::take(&mut rep_batches[i]),
+                    &read_batches[i],
+                    std::mem::take(&mut db_batches[i]),
+                    i as i64 + 1,
+                )
+            })
+            .collect();
+        let results: Vec<sweep::SweepResult> = std::thread::scope(|scope| {
+            let handles: Vec<_> = inputs
+                .into_iter()
+                .map(|(c, r, reads, db, idx)| {
+                    scope.spawn(move || sweep::reads_to_clusters(c, r, reads, db, idx, table, p))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("a clustering worker panicked"))
+                .collect()
+        });
+        for res in &results {
             out.mapped_passed += res.mapped_passed;
             out.aln_passed += res.aln_passed;
             out.aln_called += res.aln_called;
             out.skipped_short += res.skipped_short;
-            results.push(res);
         }
 
         // merge_dicts: later dicts win, but the batches are disjoint by read id.

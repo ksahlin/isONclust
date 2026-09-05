@@ -525,27 +525,36 @@ reference exactly:
 
 21 of 27 equivalence cases pass; the 6 that do not are all `--t > 1`, which is not ported.
 
-**The port is currently slower than the reference**, for two separate and separately-fixable reasons:
+**Performance, measured at each step.** Two of the three costs identified when the port first ran end
+to end have been removed; the third is the aligner and it is the one that needs a divergence.
 
-| | reference | port | ratio |
-| --- | --- | --- | --- |
-| `sirv_real_10k --t 1` | 4.2 s | 6.2 s | 0.68x |
-| `sirv_real_10k --t 8` | 1.3 s | 2.7 s | 0.47x |
-| `droso_20k --t 1` | 15.2 s | 45.6 s | 0.33x |
-| `droso_20k --t 8` | 7.0 s | 42.1 s | 0.17x |
+| | reference | port, first working | + no gratuitous clones | + threaded batches |
+| --- | --- | --- | --- | --- |
+| `sirv_real_10k --t 1` | 4.3 s | 6.2 s | — | **6.4 s** (0.67x) |
+| `sirv_real_10k --t 8` | 1.3 s | 2.7 s | — | **1.2 s** (**1.05x**) |
+| `droso_20k --t 1` | 15.2 s | 45.6 s | 39.4 s | **36.3 s** (0.42x) |
+| `droso_20k --t 8` | 7.0 s | 42.1 s | 35.8 s | **19.4 s** (0.36x) |
 
-1. **The exact aligner**, measured at 15x slower than the C library — the dominant cost wherever
-   alignment decides reads, which is most of them on ONT data.
-2. **The port runs batches sequentially.** The reference forks `--t` processes; this port does not
-   thread them yet, which is why `--t 8` barely helps it. `parallelize.rs` explains why threading is
-   behaviour-neutral here — the batches share nothing and `map_async` preserves order — so this is a
-   pure optimisation with no equivalence risk. It is simply not done yet.
-3. A third, smaller cost is self-inflicted: the sweep rebuilds a per-read map of candidate
-   representatives and clones sequences per candidate in the alignment path. Both are gratuitous and
-   neither changes output.
+What each change bought, and why neither risked equivalence:
 
-None of the three is a surprise or a mystery, and none requires giving up byte-identity except the
-first.
+* **Removing gratuitous clones — 1.16x.** The sweep built a fresh
+  `HashMap<usize, Representative>` per read, cloning every candidate's accession into it, and cloned
+  each candidate's full sequence *and* quality string per comparison — roughly 12 KB a candidate on
+  Drosophila reads, for data that is only ever read. Both are now borrowing traits
+  (`Representatives`, `AlignSource`). The reference also recomputes the *read's* own expected-error
+  sum once per candidate from an unchanging quality string; that is hoisted, which is
+  behaviour-neutral because the value is identical every time.
+* **Threading the batches — 1.94x at `--t 8`.** One thread per batch, matching the reference's
+  `Pool(processes=num_batches)`. Behaviour-neutral for a reason worth stating rather than hoping:
+  each worker owns its cluster map, representative map, read slice and minimizer database and
+  returns new ones, so nothing is shared and nothing is mutated across batches; joining the handles
+  in order reproduces `map_async`'s ordering. **Checked, not assumed** — five consecutive `--t 8`
+  runs on `sirv_real_10k` produce byte-identical output, and all 27 equivalence cases pass.
+
+`--t 8` on `sirv_real_10k` is now **slightly faster than the reference**. Everything else is still
+slower, and the remaining gap is the exact aligner: `droso_20k` runs 10 309 alignments and
+`sirv_real_10k` only 1806, which is the whole difference between 0.36x and 1.05x. Nothing further
+can be won here without either a faster exact aligner or a deliberate divergence — see *The aligner*.
 
 This is the expected consequence of choosing exactness first and it is not a surprise, but it should
 not be glossed: **a faster aligner is now the single highest-value piece of work**, and it is

@@ -26,7 +26,7 @@
 //! 7. reassign: move every recorded read into its target's cluster
 
 use crate::blockalign;
-use crate::cluster::{self, MinimizerDatabase, Representative};
+use crate::cluster::{self, MinimizerDatabase, Representatives};
 use crate::minimizers;
 use std::collections::HashMap;
 
@@ -87,6 +87,38 @@ impl OrderedClusters {
     }
     pub fn iter(&self) -> impl Iterator<Item = (usize, &Vec<String>)> {
         self.order.iter().map(move |i| (*i, &self.map[i]))
+    }
+}
+
+/// Answers `get_best_cluster_block_align`'s questions by reference.
+///
+/// The previous version cloned each candidate's full sequence *and* quality
+/// string per comparison -- roughly 12 KB per candidate on Drosophila reads, for
+/// data that is only read.
+struct RepSeqs<'a>(&'a HashMap<usize, ReadInfo>);
+
+impl blockalign::AlignSource for RepSeqs<'_> {
+    fn seq_qual(&self, id: usize) -> (&[u8], &[u8]) {
+        let x = &self.0[&id];
+        (&x.seq, &x.qual)
+    }
+    fn acc(&self, id: usize) -> &str {
+        &self.0[&id].acc
+    }
+}
+
+/// Answers `get_best_cluster`'s questions straight out of the sweep's own map.
+///
+/// This replaced a per-read `HashMap<usize, Representative>` that cloned every
+/// candidate's accession. Behaviour-neutral: both fields are read-only.
+struct RepMap<'a>(&'a HashMap<usize, ReadInfo>);
+
+impl Representatives for RepMap<'_> {
+    fn acc(&self, id: usize) -> &str {
+        &self.0[&id].acc
+    }
+    fn error_rate(&self, id: usize) -> f64 {
+        self.0[&id].error_rate.unwrap_or(f64::NAN)
     }
 }
 
@@ -215,27 +247,12 @@ pub fn reads_to_clusters(
         let hits = cluster::get_all_hits(&ms, &db, read_cl_id);
 
         // 4. map
-        let rep_view: HashMap<usize, Representative> = hits
-            .order
-            .iter()
-            .chain(std::iter::once(&read_cl_id))
-            .map(|id| {
-                let x = &reps[id];
-                (
-                    *id,
-                    Representative {
-                        acc: x.acc.clone(),
-                        error_rate: x.error_rate.unwrap_or(f64::NAN),
-                    },
-                )
-            })
-            .collect();
         let m = cluster::get_best_cluster(
             read_cl_id,
             hpol.len(),
             &hits,
             ms.len(),
-            &rep_view,
+            &RepMap(&reps),
             table,
             p.min_shared,
             p.min_fraction,
@@ -249,16 +266,10 @@ pub fn reads_to_clusters(
         // 5. align
         let a_id = if m.best_cluster_id < 0 && (m.nr_shared_kmers as i64) >= p.min_shared {
             out_aln_called += 1;
-            let seqs = |id: usize| -> (Vec<u8>, Vec<u8>) {
-                let x = &reps[&id];
-                (x.seq.clone(), x.qual.clone())
-            };
-            let accs = |id: usize| -> String { reps[&id].acc.clone() };
             let a = blockalign::get_best_cluster_block_align(
                 read_cl_id,
                 &hits,
-                &seqs,
-                &accs,
+                &RepSeqs(&reps),
                 p.k,
                 p.aligned_threshold,
             );

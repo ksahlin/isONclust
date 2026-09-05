@@ -23,13 +23,17 @@
 use std::collections::HashMap;
 
 /// What `get_best_cluster` needs from a representative.
-#[derive(Debug, Clone)]
-pub struct Representative {
+///
+/// A trait rather than a map, so the caller can answer from whatever it already
+/// holds. The previous version built a fresh `HashMap<usize, Representative>`
+/// per read and cloned every candidate's accession into it -- for nothing, since
+/// both fields are only ever read.
+pub trait Representatives {
     /// The accession *including* the appended score, as it appears in
     /// `sorted.fastq`. This is the ranking's third sort key.
-    pub acc: String,
+    fn acc(&self, id: usize) -> &str;
     /// The homopolymer-compressed error rate, added on first processing.
-    pub error_rate: f64,
+    fn error_rate(&self, id: usize) -> f64;
 }
 
 /// k-mer -> the representatives carrying it.
@@ -170,7 +174,7 @@ pub fn get_best_cluster(
     compressed_seq_len: usize,
     hits: &Hits,
     n_minimizers: usize,
-    representatives: &HashMap<usize, Representative>,
+    representatives: &dyn Representatives,
     table: &crate::p_emp::Table,
     min_shared: i64,
     min_fraction: f64,
@@ -193,12 +197,12 @@ pub fn get_best_cluster(
         let ka = (
             ha.positions.len(),
             ha.positions.iter().sum::<usize>(),
-            &representatives[a].acc,
+            representatives.acc(*a),
         );
         let kb = (
             hb.positions.len(),
             hb.positions.iter().sum::<usize>(),
-            &representatives[b].acc,
+            representatives.acc(*b),
         );
         kb.cmp(&ka) // reverse=True
     });
@@ -209,7 +213,7 @@ pub fn get_best_cluster(
         return result;
     }
 
-    let error_rate_read = representatives[&read_cl_id].error_rate;
+    let error_rate_read = representatives.error_rate(read_cl_id);
     let e_read = crate::p_emp::error_rate_index(error_rate_read);
 
     for cl_id in top_matches {
@@ -219,7 +223,7 @@ pub fn get_best_cluster(
             break;
         }
 
-        let e_centre = crate::p_emp::error_rate_index(representatives[&cl_id].error_rate);
+        let e_centre = crate::p_emp::error_rate_index(representatives.error_rate(cl_id));
         let p_error_in_kmers_emp = 1.0 - table.get(e_read, e_centre);
 
         // prob_all_errors_since_last_hit: one entry before the first hit, one
@@ -263,16 +267,16 @@ pub fn get_best_cluster(
 /// checked rather than assumed -- a duplicate would let CPython's set-iteration
 /// order decide which cluster a read joins, and the port could not reproduce it.
 #[allow(dead_code)]
-pub fn assert_unique_accessions(reps: &HashMap<usize, Representative>) -> Result<(), String> {
+pub fn assert_unique_accessions(reps: &HashMap<usize, String>) -> Result<(), String> {
     let mut seen: HashMap<&str, usize> = HashMap::with_capacity(reps.len());
-    for (id, r) in reps {
-        if let Some(other) = seen.insert(r.acc.as_str(), *id) {
+    for (id, acc) in reps {
+        if let Some(other) = seen.insert(acc.as_str(), *id) {
             return Err(format!(
                 "duplicate accession {:?} on reads {} and {}. The candidate ranking in \
                  get_best_cluster breaks ties with the accession, so duplicates make the \
                  reference's result depend on CPython set-iteration order, which this port \
                  does not model. See PORTING.md, get_all_hits.",
-                r.acc, other, id
+                acc, other, id
             ));
         }
     }
@@ -283,19 +287,24 @@ pub fn assert_unique_accessions(reps: &HashMap<usize, Representative>) -> Result
 mod tests {
     use super::*;
 
-    fn reps(specs: &[(usize, &str, f64)]) -> HashMap<usize, Representative> {
-        specs
-            .iter()
-            .map(|(id, acc, e)| {
-                (
-                    *id,
-                    Representative {
-                        acc: acc.to_string(),
-                        error_rate: *e,
-                    },
-                )
-            })
-            .collect()
+    struct TestReps(HashMap<usize, (String, f64)>);
+
+    impl Representatives for TestReps {
+        fn acc(&self, id: usize) -> &str {
+            &self.0[&id].0
+        }
+        fn error_rate(&self, id: usize) -> f64 {
+            self.0[&id].1
+        }
+    }
+
+    fn reps(specs: &[(usize, &str, f64)]) -> TestReps {
+        TestReps(
+            specs
+                .iter()
+                .map(|(id, acc, e)| (*id, (acc.to_string(), *e)))
+                .collect(),
+        )
     }
 
     #[test]
@@ -402,9 +411,11 @@ mod tests {
 
     #[test]
     fn duplicate_accessions_are_rejected_rather_than_silently_reordered() {
-        let r = reps(&[(1, "same_1.0", 0.05), (2, "same_1.0", 0.05)]);
-        assert!(assert_unique_accessions(&r).is_err());
-        let ok = reps(&[(1, "a_1.0", 0.05), (2, "b_1.0", 0.05)]);
+        let dup: HashMap<usize, String> =
+            [(1, "same_1.0".to_string()), (2, "same_1.0".to_string())].into();
+        assert!(assert_unique_accessions(&dup).is_err());
+        let ok: HashMap<usize, String> =
+            [(1, "a_1.0".to_string()), (2, "b_1.0".to_string())].into();
         assert!(assert_unique_accessions(&ok).is_ok());
     }
 }

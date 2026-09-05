@@ -321,7 +321,7 @@ fn replay_mapping(args: &cli::Args) -> ExitCode {
     let mut seq_len = 0usize;
     let mut n_minimizers = 0usize;
     let mut hits = cluster::Hits::default();
-    let mut reps: HashMap<usize, cluster::Representative> = HashMap::new();
+    let mut reps: HashMap<usize, (String, f64)> = HashMap::new();
 
     let parse_list = |s: &str| -> Vec<usize> {
         if s.is_empty() {
@@ -343,13 +343,7 @@ fn replay_mapping(args: &cli::Args) -> ExitCode {
                 let e: f64 = f[4].parse().expect("error rate");
                 hits = cluster::Hits::default();
                 reps.clear();
-                reps.insert(
-                    read_cl_id,
-                    cluster::Representative {
-                        acc: String::new(),
-                        error_rate: e,
-                    },
-                );
+                reps.insert(read_cl_id, (String::new(), e));
             }
             Some("CAND") => {
                 let cl_id: usize = f[1].parse().expect("cluster id");
@@ -360,15 +354,24 @@ fn replay_mapping(args: &cli::Args) -> ExitCode {
                 hits.order.push(cl_id);
                 hits.by_cluster
                     .insert(cl_id, cluster::HitList { indices, positions });
-                reps.insert(cl_id, cluster::Representative { acc, error_rate: e });
+                reps.insert(cl_id, (acc, e));
             }
             Some("RES") => {
+                struct ReplayReps<'a>(&'a HashMap<usize, (String, f64)>);
+                impl cluster::Representatives for ReplayReps<'_> {
+                    fn acc(&self, id: usize) -> &str {
+                        &self.0[&id].0
+                    }
+                    fn error_rate(&self, id: usize) -> f64 {
+                        self.0[&id].1
+                    }
+                }
                 let r = cluster::get_best_cluster(
                     read_cl_id,
                     seq_len,
                     &hits,
                     n_minimizers,
-                    &reps,
+                    &ReplayReps(&reps),
                     &table,
                     args.min_shared,
                     args.min_fraction,

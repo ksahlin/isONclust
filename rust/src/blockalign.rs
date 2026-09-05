@@ -154,12 +154,15 @@ pub fn expected_errors(qual: &[u8]) -> f64 {
 /// top_hits: break`), which is stricter than `get_best_cluster`'s
 /// `min_fraction` walk. The first candidate whose aligned fraction reaches
 /// `--aligned_threshold` wins.
-#[allow(clippy::too_many_arguments)]
+pub trait AlignSource {
+    fn seq_qual(&self, id: usize) -> (&[u8], &[u8]);
+    fn acc(&self, id: usize) -> &str;
+}
+
 pub fn get_best_cluster_block_align(
     read_cl_id: usize,
     hits: &crate::cluster::Hits,
-    seqs: &dyn Fn(usize) -> (Vec<u8>, Vec<u8>),
-    accs: &dyn Fn(usize) -> String,
+    src: &dyn AlignSource,
     k: usize,
     aligned_threshold: f64,
 ) -> AlignResult {
@@ -181,30 +184,33 @@ pub fn get_best_cluster_block_align(
         let ka = (
             ha.positions.len(),
             ha.positions.iter().sum::<usize>(),
-            accs(*a),
+            src.acc(*a),
         );
         let kb = (
             hb.positions.len(),
             hb.positions.iter().sum::<usize>(),
-            accs(*b),
+            src.acc(*b),
         );
         kb.cmp(&ka)
     });
 
-    let (seq, r_qual) = seqs(read_cl_id);
+    let (seq, r_qual) = src.seq_qual(read_cl_id);
     let top_hits = hits.by_cluster[&top_matches[0]].positions.len();
+    // The reference recomputes this inside the candidate loop, once per
+    // candidate, from the same unchanging quality string. Hoisting it is
+    // behaviour-neutral -- the value is identical every time.
+    let read_errors = expected_errors(r_qual) / seq.len() as f64;
 
     for cl_id in top_matches {
         let nm_hits = hits.by_cluster[&cl_id].positions.len();
         if nm_hits < top_hits {
             break;
         }
-        let (c_seq, c_qual) = seqs(cl_id);
-        let error_rate_sum = expected_errors(&r_qual) / seq.len() as f64
-            + expected_errors(&c_qual) / c_seq.len() as f64;
+        let (c_seq, c_qual) = src.seq_qual(cl_id);
+        let error_rate_sum = read_errors + expected_errors(c_qual) / c_seq.len() as f64;
         let open = gap_opening_penalty(error_rate_sum);
         let match_id = match_id_tailored(error_rate_sum, k);
-        let block = parasail_block_alignment(&seq, &c_seq, k, match_id, open);
+        let block = parasail_block_alignment(seq, c_seq, k, match_id, open);
         // The ratio leaks out of the loop in the reference, so keep the last
         // one tried even when nothing matches.
         result.alignment_ratio = block.alignment_ratio;
