@@ -3,11 +3,14 @@
 //! Only the CLI is ported so far; the clustering stages are not written yet, so
 //! a valid invocation exits 3 saying so rather than silently producing nothing.
 
+mod align;
+mod blockalign;
 mod cli;
 mod cluster;
 mod fastq;
 mod minimizers;
 mod p_emp;
+mod parasail;
 mod phred;
 mod pyfloat;
 mod pyround;
@@ -110,6 +113,14 @@ fn run(args: cli::Args) -> ExitCode {
     // (bench/dump_reference.py --stage mapping) and replayed here.
     if stage == "mapping" {
         return replay_mapping(&args);
+    }
+
+    // `parasail` replays the alignments the reference actually performed.
+    // isONform verified its parasail port against isONcorrect's parameters
+    // (match 4, mismatch -8, open 12); isONclust uses match 2, mismatch -2 and
+    // an opening penalty of 2..5, which can reach different tie-breaking paths.
+    if stage == "parasail" {
+        return replay_parasail();
     }
 
     if stage != "sort" {
@@ -366,6 +377,57 @@ fn replay_mapping(args: &cli::Args) -> ExitCode {
             }
             _ => {}
         }
+    }
+    let _ = out.flush();
+    ExitCode::SUCCESS
+}
+
+/// Replay recorded `parasail_block_alignment` calls.
+///
+/// Dump path from `ISONCLUST_PARASAIL_DUMP`; format is
+/// `bench/dump_reference.py --stage parasail`'s:
+/// `PARA<TAB>open<TAB>k<TAB>match_id<TAB>s1<TAB>s2<TAB>cigar<TAB>ratio`.
+/// Emits the same line with the port's cigar and ratio, so a plain diff is the
+/// check -- both the alignment path chosen and the ratio computed from it.
+fn replay_parasail() -> ExitCode {
+    let path = match std::env::var("ISONCLUST_PARASAIL_DUMP") {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("isONclust: ISONCLUST_STAGE=parasail needs ISONCLUST_PARASAIL_DUMP=<file>");
+            return ExitCode::from(1);
+        }
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("isONclust: cannot read {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.first().copied() != Some("PARA") || f.len() < 8 {
+            continue;
+        }
+        let open: i32 = f[1].parse().expect("opening penalty");
+        let k: usize = f[2].parse().expect("k");
+        let match_id: i64 = f[3].parse().expect("match_id");
+        let (s1, s2) = (f[4].as_bytes(), f[5].as_bytes());
+        let aln = parasail::semiglobal(s1, s2, blockalign::scoring(open));
+        let block = blockalign::parasail_block_alignment(s1, s2, k, match_id, open);
+        let _ = writeln!(
+            out,
+            "PARA\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            open,
+            k,
+            match_id,
+            f[4],
+            f[5],
+            aln.cigar,
+            pyfloat::repr(block.alignment_ratio)
+        );
     }
     let _ = out.flush();
     ExitCode::SUCCESS

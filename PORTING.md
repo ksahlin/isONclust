@@ -115,7 +115,8 @@ that wrote it.
 | `get_best_cluster` (the mapping decision) | **done** | ~95 000 recorded decisions identical across three real corpora, 54 000 of them assigning a cluster. Replayed from the live driver |
 | Python `round(x, 2)` | **done** | `pyround.rs`; 100 602 values checked against CPython |
 | empirical probability table | **done, frozen** | 437 KB blob generated from the 2.5 MB Python literal; *Finding 13* |
-| `parasail_block_alignment` + `get_best_cluster_block_align` | not started | |
+| `parasail_block_alignment` | **done** | 18 633 alignments identical — CIGAR *and* ratio — across four corpora and three of the four gap penalties. `parasail.rs` carried across from isONform |
+| `get_best_cluster_block_align` | not started | the candidate walk around the alignment |
 | `reads_to_clusters` (the driver) | not started | |
 | output writers, cluster ordering | not started | |
 | `parallelize.parallel_clustering` (`--t > 1`) | not started | semantic, not a speed knob; *Finding 3* |
@@ -1129,6 +1130,106 @@ Ordered by how much they matter.
 9. **`detect_reverse_complements` compares against centers already merged away**, and only the last
    element takes the `i == len - 1` branch. The merging is order-dependent in a way that is probably
    not intended. **Also moot for the port**, same reason.
+
+### The aligner: is parasail the bottleneck, and would WFA2 do?
+
+**Measured before answering.** Profiling `reads_to_clusters` on `droso_20k` (19 938 reads, 10 971
+alignment calls), single core:
+
+| | cumulative | share |
+| --- | --- | --- |
+| `reads_to_clusters` total | 26.63 s | 100% |
+| `get_best_cluster_block_align` | 12.42 s | 47% |
+| ├─ `parasail_block_alignment` | 10.79 s | 41% |
+| │  └─ **`parasail.sg_trace_scan_16` itself** | **4.60 s** | **17%** |
+| │  └─ `cigar_to_seq` | 1.19 s | 4% |
+| `get_kmer_minimizers` | 3.30 s | 12% |
+| `get_all_hits` | 2.15 s | 8% |
+| `get_best_cluster` | 1.37 s | 5% |
+
+So in the reference, **parasail is 17% and the Python wrapped around it is 23%** — the CIGAR
+decoding, the gapped-string expansion and the rolling match window cost more than the alignment.
+Replacing the aligner and keeping the wrapper would chase the smaller half.
+
+That is a statement about the *Python*, and it inverts after porting: the wrapper cost largely
+disappears in Rust while parasail's does not, so the aligner's share of what remains goes up. Method
+point 5 — profile before optimising, **and re-profile after**. The number to act on is the one
+measured against the finished port, not this one.
+
+**Would WFA2 do?** isONform already answered most of this, and the answer is more interesting than
+"it is faster":
+
+* **WFA2's ends-free mode is not parasail's semi-global** (isONform, finding 40). parasail
+  *maximises a score* with a positive match reward; WFA2 *minimises a penalty* with `match = 0`.
+  With all four ends free the empty alignment costs nothing and is therefore always optimal — on two
+  identical 20 bp sequences WFA2 returns `DDDD…IIII`, aligning nothing. Even with the ends bounded it
+  pays nothing for terminal matches and declines them: 48 bases shaved off two identical 200 bp
+  sequences.
+* **isONform's reconciliation is the reusable part.** `src/wfa.rs` bounds the free ends, greedily
+  extends the aligned core outward over matching pairs, then scores the resulting columns with
+  **parasail's own rules**. WFA2 only chooses the columns; the `Scoring` prices them. That is what
+  keeps the arithmetic checkable, and it is directly portable here because this port already carries
+  isONform's `parasail.rs` and its `Scoring`.
+* **It was a real improvement there**, not a trade: on droso, +14 FSM isoforms over both Python and
+  the faithful port, and 4.7x faster (isONform, finding 55).
+
+**On gap penalties and exon differences** — the specific worry. Both libraries use the same affine
+model, `open + (L - 1) * ext`, so WFA2 is not inherently worse: configured with isONclust's
+parameters it prices a gap identically. Neither is *well suited* to exon-scale gaps, though. With
+`gap_ext = 1` a skipped 500 bp exon costs about 500, which at `match = 2` needs 250 matching bases
+just to break even, so a genuine exon difference tends to look like a bad alignment rather than a
+gap. What WFA2 offers that parasail does not is **two-piece affine** (a second, cheaper regime for
+long gaps), which is exactly the model this problem wants. That is the interesting question here, and
+it is not primarily a speed question at all: it would change which reads cluster together, probably
+for the better, and on ONT data the alignment path decides **10 309 of 19 938 reads** on
+`droso_20k` — the majority.
+
+**And the exact port is 15x slower than the C library.** Measured on `droso_20k`: replaying the
+reference's own 11 241 alignments takes **67 s** in the port against **4.6 s** for
+`parasail.sg_trace_scan_16` (dump parsing is 0.02 s of that, so it is all alignment). `parasail.rs`
+is an exact scalar dynamic program — it exists to be *right*, and reproducing parasail's tie-breaking
+bit for bit is what it is for. It is not, and was never meant to be, fast.
+
+That inverts the picture above and is the single most important performance fact so far: **on ONT
+data the port will be slower than the reference until this is addressed**, because the alignment path
+decides the majority of reads. The 12–15x won on the sorting stage does not pay for it.
+
+isONform's answer was `simd.rs` — block-aligner behind a parasail-shaped call — but that is an
+*approximation*: isONcorrect measured it as "optimal score on 1400/1400 recorded alignments; differs
+only in which equally-optimal path it reports, changing ~0.8% of reads". Under a byte-identity goal
+that is a divergence, not an optimisation, so it cannot be adopted while exactness is the
+specification. It is the obvious candidate the moment that changes.
+
+**Which corpora reach which gap penalties**, measured across the recorded alignments — the penalty is
+chosen per comparison from the two reads' summed error rates, so this is really a statement about
+read quality:
+
+| corpus | alignments | opening penalties reached |
+| --- | --- | --- |
+| `smoke` | 101 | **5** only |
+| `sirv_real_10k` | 1 806 | **2** only |
+| `sirv_pacbio` | 5 485 | **4** only |
+| `droso_20k` | 11 241 | 2 (3 823), **3** (7 247), 4 (171) |
+
+No single corpus reaches all four. `droso_20k` covers three, and only the near-perfect reads in
+`smoke` reach 5 — which is the one case simulated data is *good* for. **`smoke` + `droso_20k`
+together cover all four**, and that pair is the minimum any aligner comparison must run on. Running
+one corpus alone would leave a quarter of the parameter space unmeasured, and `sirv_real_10k` alone
+would leave three quarters.
+
+**So the work, in order:**
+
+1. Finish the port and **re-profile**. The 17% above is a Python measurement and will not survive.
+2. If the aligner is then the bottleneck, port isONform's `wfa.rs` alongside its `parasail.rs`,
+   keeping parasail as the exact baseline. Gate the swap on **clustering verdicts**, not on
+   alignment scores (isONform, finding 41).
+3. Two-piece affine is a **separate** experiment from the WFA2 swap, and a behaviour change either
+   way. Measure it alone, against an exact baseline, on `droso_20k` where the alignment path is
+   load-bearing — isONform's finding 55 exists because stacking divergences inverted the sign of an
+   earlier conclusion.
+
+Every step here is a deliberate divergence and needs its own commit and its own note, per the goal:
+byte-identity first, improvements after.
 
 ### Memory: the whole dataset is resident, and 2-bit encoding is the obvious win
 

@@ -6,7 +6,11 @@ name = "isonclust"
 # internal only. Do not "fix" --version to read from CARGO_PKG_VERSION.
 version = "0.0.6"
 edition = "2021"
-rust-version = "1.74"
+# 1.85, matching the isONcorrect and isONform ports. parasail.rs and align.rs
+# are carried across from isONform verbatim and need at least 1.82
+# (std::iter::repeat_n); pinning to the same version as the repos the code comes
+# from means a toolchain that builds one builds all three.
+rust-version = "1.85"
 description = "De novo clustering of long-read transcriptome reads (Rust port of isONclust)"
 license = "GPL-3.0"
 

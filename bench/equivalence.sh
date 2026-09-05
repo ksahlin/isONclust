@@ -13,6 +13,7 @@
 #   bench/equivalence.sh stage sort        # files a ported stage owns, across the matrix
 #   bench/equivalence.sh stage minimizers  # a stage with no file output, via dumps
 #   bench/equivalence.sh stage mapping     # get_best_cluster, replayed from the live driver
+#   bench/equivalence.sh stage parasail    # the aligner, on isONclust's own parameters
 #   bench/equivalence.sh all      # everything
 #
 # Environment:
@@ -523,7 +524,7 @@ cmd_stage_minimizers() {
   for kw in "${pairs[@]}"; do
     k="${kw% *}"; w="${kw#* }"
     $REF_PYTHON bench/dump_reference.py --stage minimizers \
-      --sorted-fastq "$d/sorted.fastq" --k "$k" --w "$w" > "$d/ref.tsv" 2>/dev/null
+      --sorted-fastq "$d/sorted.fastq" --k "$k" --w "$w" --out "$d/ref.tsv" 2>/dev/null
     ISONCLUST_STAGE=minimizers "$PORT_BIN" --k "$k" --w "$w" \
       --fastq "$d/sorted.fastq" --outfolder "$d/o" > "$d/port.tsv" 2>/dev/null
     rl=$(wc -l < "$d/ref.tsv" | tr -d ' '); pl=$(wc -l < "$d/port.tsv" | tr -d ' ')
@@ -568,7 +569,7 @@ cmd_stage_mapping() {
   for kw in "${settings[@]}"; do
     k="${kw% *}"; w="${kw#* }"
     $REF_PYTHON bench/dump_reference.py --stage mapping \
-      --sorted-fastq "$d/sorted.fastq" --k "$k" --w "$w" > "$d/dump.tsv" 2>/dev/null
+      --sorted-fastq "$d/sorted.fastq" --k "$k" --w "$w" --out "$d/dump.tsv" 2>/dev/null
     grep '^RES' "$d/dump.tsv" > "$d/ref.tsv" || true
     ISONCLUST_MAPPING_DUMP="$d/dump.tsv" ISONCLUST_STAGE=mapping "$PORT_BIN" \
       --k "$k" --w "$w" --fastq "$d/sorted.fastq" --outfolder "$d/o" \
@@ -585,6 +586,45 @@ cmd_stage_mapping() {
   done
   # See cli_case: without this the last command's status becomes the function's
   # and `set -e` aborts before the summary line. Third time this shape has bitten.
+  return 0
+}
+
+
+# The aligner, on isONclust's OWN parameters. parasail.rs is carried across from
+# isONform, which verified it against isONcorrect's scoring (match 4, mismatch
+# -8, open 12). isONclust uses match 2, mismatch -2 and an opening penalty of
+# 2..5 chosen per comparison, which can reach different tie-breaking paths -- so
+# reusing a verified module is not the same as having verified it here.
+#
+# Both the CIGAR and the derived alignment ratio are compared: the ratio is what
+# the clustering decision actually reads, and two different optimal paths can
+# score the same while giving different ratios.
+cmd_stage_parasail() {
+  local d="$WORK/pa"
+  rm -rf "$d"; mkdir -p "$d"
+  PYTHONHASHSEED=0 $REF_PYTHON isONclust --k 13 --w 20 --t 1 \
+    --fastq "$CORPUS" --outfolder "$d" >/dev/null 2>&1 || true
+  if [[ ! -s "$d/sorted.fastq" ]]; then
+    bad "could not produce a sorted.fastq from $CORPUS"
+    return 0
+  fi
+  $REF_PYTHON bench/dump_reference.py --stage parasail \
+    --sorted-fastq "$d/sorted.fastq" --k 13 --w 20 --out "$d/ref.tsv" 2>/dev/null
+  local n; n=$(wc -l < "$d/ref.tsv" | tr -d ' ')
+  if [[ "$n" == "0" ]]; then
+    ok "no alignments recorded"
+    info "  WARNING: this corpus never reaches the alignment path"
+    return 0
+  fi
+  ISONCLUST_PARASAIL_DUMP="$d/ref.tsv" ISONCLUST_STAGE=parasail "$PORT_BIN" \
+    --k 13 --w 20 --fastq "$d/sorted.fastq" --outfolder "$d/o" > "$d/port.tsv" 2>/dev/null
+  local opens; opens=$(awk -F'\t' '{print $2}' "$d/ref.tsv" | sort -u | paste -sd, -)
+  if cmp -s "$d/ref.tsv" "$d/port.tsv"; then
+    ok "$n alignments identical, cigar and ratio (opening penalties: $opens)"
+  else
+    bad "$(diff "$d/ref.tsv" "$d/port.tsv" | grep -c '^<') of $n alignments differ"
+    diff "$d/ref.tsv" "$d/port.tsv" | head -4 | cut -c1-140 | sed 's/^/          /' || true
+  fi
   return 0
 }
 
@@ -605,6 +645,11 @@ cmd_stage() {
   if [[ "$which" == "mapping" ]]; then
     echo "==> stage 'mapping': get_best_cluster decisions, replayed from the live driver"
     cmd_stage_mapping
+    return 0
+  fi
+  if [[ "$which" == "parasail" ]]; then
+    echo "==> stage 'parasail': alignments replayed from the live driver"
+    cmd_stage_parasail
     return 0
   fi
   echo "==> stage '$which': the files this stage owns, across the case matrix"
@@ -654,8 +699,8 @@ case "${1:-all}" in
   dropped) cmd_dropped ;;
   stable)  cmd_stable ;;
   stage)   cmd_stage "${2:-sort}" ;;
-  all)     cmd_env; cmd_seeds; cmd_cli record; cmd_record; cmd_stable; cmd_stage sort; cmd_stage minimizers; cmd_stage mapping; cmd_verify; cmd_dropped ;;
-  *) echo "usage: $0 {env|seeds|cli [record|verify]|record|verify|dropped|stable|stage [sort|minimizers|mapping]|all}" >&2; exit 2 ;;
+  all)     cmd_env; cmd_seeds; cmd_cli record; cmd_record; cmd_stable; cmd_stage sort; cmd_stage minimizers; cmd_stage mapping; cmd_stage parasail; cmd_verify; cmd_dropped ;;
+  *) echo "usage: $0 {env|seeds|cli [record|verify]|record|verify|dropped|stable|stage [sort|minimizers|mapping|parasail]|all}" >&2; exit 2 ;;
 esac
 
 echo
