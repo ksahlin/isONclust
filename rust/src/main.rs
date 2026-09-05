@@ -15,9 +15,11 @@ mod parasail;
 mod phred;
 mod pyfloat;
 mod pyround;
+mod simd;
 mod sorting;
 mod sweep;
 mod text;
+mod wfa;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -124,6 +126,11 @@ fn run(args: cli::Args) -> ExitCode {
     // an opening penalty of 2..5, which can reach different tie-breaking paths.
     if stage == "parasail" {
         return replay_parasail();
+    }
+
+    // Compare candidate aligners against the exact one on real recorded calls.
+    if stage == "aligners" {
+        return compare_aligners(&args);
     }
 
     if stage != "sort" {
@@ -442,6 +449,22 @@ fn replay_parasail() -> ExitCode {
     }
     let _ = out.flush();
     ExitCode::SUCCESS
+}
+
+/// Whether to run in exactly-the-reference mode.
+///
+/// **True by default, and that is the whole point of this port**: the
+/// specification is byte-identity, so every approximation is opt-in. isONform's
+/// equivalent defaults the other way, because its specification is accuracy --
+/// the flag is carried across with `wfa.rs` and inverted here deliberately.
+///
+/// `ISONCLUST_FAITHFUL=0` turns the experimental aligners on. Nothing in the
+/// tested contract runs with it set; it exists for `ISONCLUST_STAGE=aligners`.
+pub fn faithful() -> bool {
+    !matches!(
+        std::env::var("ISONCLUST_FAITHFUL").as_deref(),
+        Ok("0") | Ok("false")
+    )
 }
 
 /// Strip the score suffix the sorting stage appended:
@@ -778,5 +801,154 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
         }
     }
     println!("Wrote clusters to separate fastq files.");
+    ExitCode::SUCCESS
+}
+
+/// Replay the recorded alignments through every candidate aligner and report
+/// what each costs and what each changes.
+///
+/// The metric that matters is **not** CIGAR equality. isONclust reads one number
+/// out of the alignment -- the fraction of windows with enough matches -- and
+/// compares it against `--aligned_threshold`. Two different optimal paths can
+/// give the same verdict, and a tiny ratio difference on the wrong side of the
+/// threshold changes a read's cluster. So this reports, in order of increasing
+/// relevance: time, CIGAR agreement, ratio agreement, and **verdict agreement**.
+///
+/// That ordering is isONform's finding 41 -- gate an aligner swap on verdicts,
+/// not on scores -- applied to this tool's actual decision.
+fn compare_aligners(args: &cli::Args) -> ExitCode {
+    let path = match std::env::var("ISONCLUST_PARASAIL_DUMP") {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("isONclust: ISONCLUST_STAGE=aligners needs ISONCLUST_PARASAIL_DUMP=<file>");
+            return ExitCode::from(1);
+        }
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("isONclust: cannot read {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    struct Case {
+        open: i32,
+        k: usize,
+        match_id: i64,
+        s1: Vec<u8>,
+        s2: Vec<u8>,
+        ref_cigar: String,
+        ref_ratio: f64,
+    }
+    let mut cases: Vec<Case> = Vec::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.first().copied() != Some("PARA") || f.len() < 8 {
+            continue;
+        }
+        cases.push(Case {
+            open: f[1].parse().expect("open"),
+            k: f[2].parse().expect("k"),
+            match_id: f[3].parse().expect("match_id"),
+            s1: f[4].as_bytes().to_vec(),
+            s2: f[5].as_bytes().to_vec(),
+            ref_cigar: f[6].to_string(),
+            ref_ratio: f[7].parse().expect("ratio"),
+        });
+    }
+    if cases.is_empty() {
+        eprintln!("isONclust: no PARA records in {path}");
+        return ExitCode::from(1);
+    }
+
+    let threshold = args.aligned_threshold;
+    println!("# {} recorded alignments from {}", cases.len(), path);
+    println!("# verdict = (alignment_ratio >= --aligned_threshold {threshold})");
+    println!(
+        "{:<14} {:>9} {:>7} {:>12} {:>12} {:>12} {:>9}",
+        "ALIGNER", "SECS", "REL", "CIGAR_SAME", "RATIO_SAME", "VERDICT_SAME", "DECLINED"
+    );
+
+    // The ratio computation, shared, so only the aligner differs.
+    let ratio_from =
+        |ops: &[align::CigarOp], s1: &[u8], s2: &[u8], k: usize, match_id: i64| -> f64 {
+            let (a1, a2) = match align::ops_to_seq(ops, s1, s2) {
+                Some(x) => x,
+                None => return f64::NAN,
+            };
+            let matches: Vec<u8> = a1
+                .iter()
+                .zip(a2.iter())
+                .map(|(x, y)| u8::from(x == y))
+                .collect();
+            let head = matches.len().min(k);
+            let mut current: i64 = matches[..head].iter().map(|x| i64::from(*x)).sum();
+            let mut aligned: i64 = i64::from(current >= match_id);
+            for (leaving, &new_state) in matches.iter().zip(matches.iter().skip(k)) {
+                current = current - i64::from(*leaving) + i64::from(new_state);
+                aligned += i64::from(current >= match_id);
+            }
+            aligned as f64 / s1.len() as f64
+        };
+
+    let mut baseline_secs = 0f64;
+    for which in ["parasail(exact)", "block-aligner", "wfa2"] {
+        let t0 = std::time::Instant::now();
+        let (mut cig_same, mut ratio_same, mut verdict_same, mut declined) = (0usize, 0, 0, 0);
+        for c in &cases {
+            let sc = blockalign::scoring(c.open);
+            let (cigar, ops): (String, Vec<align::CigarOp>) = match which {
+                "parasail(exact)" => {
+                    let a = parasail::semiglobal(&c.s1, &c.s2, sc);
+                    (a.cigar, a.ops)
+                }
+                "block-aligner" => {
+                    let mut ops = Vec::new();
+                    match simd::semiglobal_ops(&c.s1, &c.s2, sc, &mut ops) {
+                        Some(_) => (align::encode_cigar(&ops), ops),
+                        None => {
+                            declined += 1;
+                            let a = parasail::semiglobal(&c.s1, &c.s2, sc);
+                            (a.cigar, a.ops)
+                        }
+                    }
+                }
+                _ => match wfa::semiglobal(&c.s1, &c.s2, sc) {
+                    Some(a) => (a.cigar, a.ops),
+                    None => {
+                        declined += 1;
+                        let a = parasail::semiglobal(&c.s1, &c.s2, sc);
+                        (a.cigar, a.ops)
+                    }
+                },
+            };
+            let ratio = ratio_from(&ops, &c.s1, &c.s2, c.k, c.match_id);
+            if cigar == c.ref_cigar {
+                cig_same += 1;
+            }
+            if ratio == c.ref_ratio {
+                ratio_same += 1;
+            }
+            if (ratio >= threshold) == (c.ref_ratio >= threshold) {
+                verdict_same += 1;
+            }
+        }
+        let secs = t0.elapsed().as_secs_f64();
+        if which == "parasail(exact)" {
+            baseline_secs = secs;
+        }
+        let n = cases.len() as f64;
+        println!(
+            "{:<14} {:>9.2} {:>6.2}x {:>11.4}% {:>11.4}% {:>11.4}% {:>9}",
+            which,
+            secs,
+            baseline_secs / secs,
+            100.0 * cig_same as f64 / n,
+            100.0 * ratio_same as f64 / n,
+            100.0 * verdict_same as f64 / n,
+            declined
+        );
+    }
     ExitCode::SUCCESS
 }

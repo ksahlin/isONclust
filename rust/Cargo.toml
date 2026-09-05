@@ -24,6 +24,28 @@ name = "isONclust"
 path = "src/main.rs"
 
 [dependencies]
+# Two candidate replacements for the exact scalar parasail port, which is 15x
+# slower than the C library and is what makes this port slower than the
+# reference on ONT data. Both are carried across from isONform with their
+# reconciliation logic; see PORTING.md, "The aligner". They are BEHIND A FLAG:
+# the default build is still exact, because byte-identity is the specification.
+#
+# WFA2. biodiff-wfa2-sys rather than libwfa2 because the latter's manifest uses
+# profile-rustflags and so needs nightly cargo; this one vendors WFA2-lib and
+# ships pregenerated bindings, so it needs cmake but not bindgen.
+biodiff-wfa2-sys = "2.3.5"
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+block-aligner = { version = "0.5.1", features = ["simd_neon"] }
+
+[target.'cfg(all(target_arch = "x86_64", target_feature = "avx2"))'.dependencies]
+block-aligner = { version = "0.5.1", features = ["simd_avx2"] }
+
+[target.'cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))'.dependencies]
+block-aligner = { version = "0.5.1", features = ["simd_sse2"] }
+
+[target.'cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))'.dependencies]
+block-aligner = { version = "0.5.1", features = ["no_simd"] }
 
 [profile.release]
 opt-level = 3
