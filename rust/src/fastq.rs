@@ -6,10 +6,17 @@
 //! 1. **Spaces in the header become underscores** (`last[1:].replace(" ", "_")`).
 //!    Accessions are later split on `_`, and the score is appended with `_`, so
 //!    this is not cosmetic.
-//! 2. **Every line is truncated with `l[:-1]`, not `rstrip`.** That removes the
-//!    final character unconditionally, assuming it is a newline. A file whose
-//!    last line has no trailing newline therefore loses its last character --
-//!    for a fastq, one quality value. Reproduced deliberately; see the test.
+//! 2. **Lines are chomped, not `rstrip`ped.** The reference drops a trailing
+//!    `\n` and nothing else, so a CRLF file carries its `\r` into the name,
+//!    sequence and quality -- in the reference too. Do not "fix" that here; it
+//!    would be a silent divergence.
+//!
+//!    It used to use `l[:-1]`, removing the final character whatever it was,
+//!    which made a file with no trailing newline yield a record with **no
+//!    quality at all** and crash the caller (Finding 11). That is fixed in the
+//!    Python now, and this matches the fixed behaviour. A quality string that
+//!    is genuinely shorter than the sequence still yields `None`, and still
+//!    crashes the reference -- see `run` in main.rs.
 
 /// One record. `qual` is `None` for fasta input.
 #[derive(Debug, Clone, PartialEq)]
@@ -19,15 +26,12 @@ pub struct Record {
     pub qual: Option<String>,
 }
 
-/// Strip exactly one trailing character, as Python's `l[:-1]` does.
+/// Drop a trailing newline if there is one -- the reference's `_chomp`.
 ///
-/// Note this is not `trim_end`: it drops the last character whatever it is, and
-/// on a `\r\n` file it leaves the `\r` in place -- which the reference also
-/// does, so a CRLF fastq carries `\r` into the sequence in both.
+/// Not `trim_end`: only `\n` goes. A CRLF file keeps its `\r`, in the
+/// reference and here alike.
 fn chop(line: &str) -> &str {
-    let mut chars = line.chars();
-    chars.next_back();
-    chars.as_str()
+    line.strip_suffix('\n').unwrap_or(line)
 }
 
 /// Parse fastq/fasta exactly as the reference's generator does.
@@ -139,24 +143,40 @@ mod tests {
         assert_eq!(r[0].name, "read_1_strand=+");
     }
 
-    /// Without a trailing newline the final record comes back with **no
-    /// quality at all**, not a truncated one: `l[:-1]` shortens the line, the
-    /// running length never reaches `len(seq)`, the loop hits EOF, and the
-    /// reference falls through to `yield name, (seq, None)`.
-    ///
-    /// Asked of the reference rather than reasoned about -- the first version of
-    /// this test asserted `Some("III")` and was wrong. Downstream this is
-    /// Finding 11: the caller iterates the quality string and dies with
+    /// Finding 11, now fixed in the Python: a file whose last line has no
+    /// newline parses normally. Before the fix the whole quality string was
+    /// dropped and the caller died with
     /// `TypeError: 'NoneType' object is not iterable`.
     #[test]
-    fn a_missing_final_newline_drops_the_quality_entirely() {
+    fn a_missing_final_newline_parses_normally() {
         let with = read("@r1\nACGT\n+\nIIII\n");
         let without = read("@r1\nACGT\n+\nIIII");
         assert_eq!(with[0].qual.as_deref(), Some("IIII"));
-        assert_eq!(without[0].qual, None);
+        assert_eq!(without[0].qual.as_deref(), Some("IIII"));
+        assert_eq!(with, without);
     }
 
-    /// Quality shorter than the sequence: same path, same outcome.
+    #[test]
+    fn a_missing_final_newline_does_not_lose_the_last_read() {
+        let r = read("@r1\nACGT\n+\nIIII\n@r2\nTTTT\n+\nJJJJ");
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[1].name, "r2");
+        assert_eq!(r[1].qual.as_deref(), Some("JJJJ"));
+    }
+
+    /// CRLF is deliberately NOT handled: the reference carries the `\r` into
+    /// the name, sequence and quality, so this does too.
+    #[test]
+    fn crlf_carries_the_carriage_return_through() {
+        let r = read("@r1\r\nACGT\r\n+\r\nIIII\r\n");
+        assert_eq!(r[0].name, "r1\r");
+        assert_eq!(r[0].seq, "ACGT\r");
+        assert_eq!(r[0].qual.as_deref(), Some("IIII\r"));
+    }
+
+    /// Quality genuinely shorter than the sequence still yields `None`, with or
+    /// without a trailing newline. That path is untouched by the fix and still
+    /// crashes the reference, so the port reports it.
     #[test]
     fn quality_shorter_than_sequence_yields_none() {
         let r = read("@r1\nACGTA\n+\nIII\n");

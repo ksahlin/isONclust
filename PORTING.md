@@ -778,12 +778,20 @@ The caller does not guard it. Measured, on a two-read fastq with no trailing new
 | **without** | **1** | `TypeError: 'NoneType' object is not iterable` |
 
 Files get truncated, hand-edited and generated without a final newline all the time, so this is easy
-to hit and gives a traceback rather than an explanation. It is *not* fixed here, unlike *Finding 9*:
-the sensible fix is to parse the last record properly, which lets an extra read into the clustering
-and therefore changes results for such files. That is a behaviour change with an accuracy question
-attached, so it belongs in *Deferred improvements* and needs the owner's call.
+to hit and gives a traceback rather than an explanation.
 
-The port reproduces the failure and says why.
+**Fixed in the reference**, on `master`, as its own commit. The fix is minimal: a line that ends in
+`\n` is chomped exactly as `l[:-1]` did — carriage returns included, so CRLF files are untouched —
+and only the final unterminated line changes. The quality-length counter follows the same rule
+instead of assuming `len(l) - 1`.
+
+Verified a no-op on everything that already worked: **0 differing manifest rows** across the full
+27-case matrix on the smoke corpus, on `sirv_real_10k` and on `droso_20k`. All three end in a
+newline, which is both why they were unaffected and why the bug survived this long.
+
+A quality string that is genuinely shorter than its sequence still yields `None` and still crashes
+the reference. That path is untouched, and the port reports it rather than reproducing the
+traceback.
 
 Worth noting how this was found: the first version of the port's unit test asserted that the last
 *quality value* was dropped, which is what reading the code suggests. Asking the reference showed the
@@ -1045,6 +1053,54 @@ Ordered by how much they matter.
 9. **`detect_reverse_complements` compares against centers already merged away**, and only the last
    element takes the `i == len - 1` branch. The merging is order-dependent in a way that is probably
    not intended. **Also moot for the port**, same reason.
+
+### Memory: the whole dataset is resident, and 2-bit encoding is the obvious win
+
+**Yes, every read is in memory at once, and more than once.** Confirmed by reading and by measuring:
+
+- `get_sorted_fastq_for_cluster` builds `read_array` holding `(acc, seq, qual, score)` for every
+  surviving read, sorts it, and writes `sorted.fastq`.
+- `isONclust.main` then **reads that file back** into a second `read_array` of
+  `(i, b_i, acc, seq, qual, score)`.
+- `single_clustering` copies each entry into `representatives`, and `reads_to_clusters` replaces
+  each with a 7-tuple carrying the same `seq` and `qual` again.
+- In parallel mode (`--t > 1`) the batches are **pickled to worker processes**, so the peak is
+  multiplied by the number of cores.
+
+Measured on `droso_100k` — 99 547 reads, a 136 MB fastq:
+
+| | peak RSS |
+| --- | --- |
+| reference, full run at `--t 1` | **1476 MB** (~11x the input) |
+| the port's sorting stage alone | 608 MB (~4.5x) |
+
+**The proposal: pack nucleotides two bits each** (`A=00, C=01, G=10, T=11`), which cuts sequence
+storage 4x. Worth doing, and worth knowing exactly what it costs before it lands:
+
+- **It breaks the byte-identity contract on any dataset containing `N` or another non-ACGT
+  character**, if those are mapped to a pseudo-random nucleotide. This is not hypothetical: `N` is
+  observable in at least two places. `get_kmer_minimizers` picks minimizers by **lexicographic order
+  on the k-mer string**, and `'N'` (ASCII 78) sorts between `'G'` (71) and `'T'` (84) — so an `N`
+  changes which k-mer wins a window. And parasail's matrix is built for `"ACGT"`, scoring anything
+  else as 0 rather than as a match, which changes the alignment path.
+- **Every corpus in `bench/corpora.tsv` is pure ACGT** — checked, zero non-ACGT bases in the smoke
+  fixture, `sirv_real_10k`, `droso_20k` and `sirv_pacbio` — so the change would be *measurably*
+  lossless on everything currently tested. That is a reason to be careful rather than reassured: it
+  means the test suite cannot see the divergence, which is *Finding 5*'s lesson again. A corpus with
+  `N`s has to be built before this lands.
+- **A third option avoids the contract break entirely:** three bits per base, or 2-bit plus a
+  sparse side-table of exception positions. `N` is rare in ONT and PacBio output, so a side-table
+  costs almost nothing and keeps the port exact. Prefer that unless measurement says the extra
+  indirection is expensive.
+- **Quality strings are the other half of the footprint and cannot be 2-bit** — they carry 40+
+  distinct values. They also cannot simply be dropped after scoring: `reads_to_clusters` needs the
+  quality string again to compute the homopolymer-compressed error rate, and
+  `get_best_cluster_block_align` recomputes `poisson_mean` from the *full* quality string for every
+  candidate it considers. Caching one float per read instead of retaining the string is likely the
+  larger and safer win, and it is behaviour-neutral.
+
+Order of work, when it comes: build an `N`-containing corpus; cache the per-read quality statistics;
+then pack sequences, with the exception table; measure each separately.
 
 ### Performance and structure, once exact
 
