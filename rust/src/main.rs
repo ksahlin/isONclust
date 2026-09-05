@@ -5,6 +5,7 @@
 
 mod cli;
 mod fastq;
+mod minimizers;
 mod phred;
 mod pyfloat;
 mod sorting;
@@ -91,6 +92,15 @@ fn run(args: cli::Args) -> ExitCode {
     }
 
     let stage = std::env::var("ISONCLUST_STAGE").unwrap_or_default();
+
+    // `minimizers` dumps the same format as `bench/dump_reference.py --stage
+    // minimizers`, so the two can be diffed directly. It takes an ALREADY
+    // SORTED fastq, because that is the order `reads_to_clusters` iterates and
+    // the stage under test is the minimizer selection, not the sort.
+    if stage == "minimizers" {
+        return dump_minimizers(&args);
+    }
+
     if stage != "sort" {
         eprintln!("isONclust: the clustering stages are not ported yet.");
         eprintln!("The CLI and the sorting stage are done; see PORTING.md 'Port status'.");
@@ -185,5 +195,55 @@ fn run(args: cli::Args) -> ExitCode {
             return ExitCode::from(1);
         }
     }
+    ExitCode::SUCCESS
+}
+
+/// Dump `(read index, position, minimizer)` for every read, in file order.
+///
+/// Matches `bench/dump_reference.py --stage minimizers` byte for byte. A read
+/// the reference skips (homopolymer-compressed length < k) emits one line with
+/// position -1 and an empty minimizer, so the skip is part of the comparison
+/// rather than an absence.
+fn dump_minimizers(args: &cli::Args) -> ExitCode {
+    let path = match &args.fastq {
+        Some(f) => f.clone(),
+        None => {
+            eprintln!("isONclust: ISONCLUST_STAGE=minimizers needs --fastq <sorted.fastq>");
+            return ExitCode::from(1);
+        }
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("isONclust: cannot read {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let k = args.k as usize;
+    let w = args.w as usize;
+
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+    for (idx, rec) in fastq::read(&text).iter().enumerate() {
+        match minimizers::minimizers_for_read(rec.seq.as_bytes(), k, w) {
+            None => {
+                let _ = writeln!(out, "{idx}\t-1\t");
+            }
+            Some((hpol, spans)) => {
+                for (pos, len) in spans {
+                    // The minimizer can be shorter than k, or empty, where the
+                    // window ran past the end -- Finding 4.
+                    let end = (pos + len).min(hpol.len());
+                    let m = if pos >= hpol.len() {
+                        &hpol[0..0]
+                    } else {
+                        &hpol[pos..end]
+                    };
+                    let _ = writeln!(out, "{idx}\t{pos}\t{}", String::from_utf8_lossy(m));
+                }
+            }
+        }
+    }
+    let _ = out.flush();
     ExitCode::SUCCESS
 }

@@ -110,7 +110,7 @@ that wrote it.
 | quality scoring + score sort (`sorted.fastq`) | **done** | `sorted.fastq` and `logfile.txt` byte-identical on 24 cases × 3 corpora, and on 10 configurations spanning ~257 000 reads. 12–15x faster |
 | Python `str(float)` | **done** | `pyfloat.rs`; 39 997 values differentially checked against CPython |
 | phred tables | **done, frozen** | *Finding 12*; 256 entries checked against the reference |
-| `get_kmer_minimizers` | not started | needs a dump oracle regardless, but the corpus can now see it (*Finding 5*) |
+| `get_kmer_minimizers` | **done** | ~23 million minimizers identical across three corpora and six `(k, w)` settings, including *Finding 4*'s 1687 empty and 152 sub-k minimizers. `bench/dump_reference.py` + `equivalence.sh stage minimizers` |
 | `get_all_hits` | not started | |
 | `get_best_cluster` (the mapping decision) | not started | |
 | `parasail_block_alignment` + `get_best_cluster_block_align` | not started | |
@@ -477,10 +477,13 @@ isONform both needed — `bench/dump_reference.py` wrapping the reference **with
 writing each stage's inputs *and* outputs in a stable line format, replayed from Rust and diffed
 directly. Stages worth dumping, in dependency order:
 
-1. `readfq` — accession/sequence/quality triples, including the `" "` → `"_"` rewrite in headers
-2. `expected_number_of_erroneous_kmers` and the score, per read
-3. the filter decisions, per read, with the reason
-4. `get_kmer_minimizers` — the full `(minimizer, position)` list per read, per `(k, w)`
+1. ~~`readfq`~~ — **done**, verified through `sorted.fastq` itself
+2. ~~`expected_number_of_erroneous_kmers` and the score~~ — **done**, same route
+3. ~~the filter decisions~~ — **done**, same route
+4. ~~`get_kmer_minimizers` — the full `(minimizer, position)` list per read, per `(k, w)`~~ —
+   **done**, and this is the one that needed a dump: `bench/dump_reference.py --stage minimizers`
+   against the port's `ISONCLUST_STAGE=minimizers`, both consuming the *reference's* `sorted.fastq`
+   so a difference is the minimizer selection and not the sort
 5. the compressed quality string and `error_rate`, per read
 6. `get_all_hits` — the three dicts, per read
 7. `get_best_cluster` — the ranking, the per-candidate mapped fraction, the winner
@@ -488,6 +491,21 @@ directly. Stages worth dumping, in dependency order:
 9. `reads_to_clusters` — the `read → cluster` decision and the database size, per read
 
 End-to-end equivalence tells you *that* the port is wrong, never *where*.
+
+**The dump oracle earns its keep, demonstrated.** Two plausible ways to get `get_kmer_minimizers`
+wrong were introduced deliberately and both were caught on `droso_20k`:
+
+| deliberate error | caught? | line count |
+| --- | --- | --- |
+| ties to the **last** position in the window (isONcorrect's rule, via `rposition`) | yes, all six `(k, w)` settings | **unchanged** |
+| clamp the window to the sequence, i.e. "fix" *Finding 4* | yes, all six | **unchanged** |
+
+Both produce exactly the same number of minimizers, so a check that compared counts — or a spot
+check of the first few reads — would have passed. The comparison has to be the full ordered list.
+
+The stage report also prints how many empty and sub-k minimizers each case actually exercised, so a
+pass on a corpus that never reaches *Finding 4* says so rather than looking like coverage: the smoke
+corpus reports `empty: 0, sub-k: 0` at every setting, and `droso_20k` reports up to 1687 and 152.
 
 ## Findings in the reference
 

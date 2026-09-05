@@ -10,7 +10,8 @@
 #   bench/equivalence.sh verify   # run the port, diff against the goldens
 #   bench/equivalence.sh dropped  # the port must refuse the out-of-scope flags
 #   bench/equivalence.sh stable   # recording twice must give identical goldens
-#   bench/equivalence.sh stage sort  # the ported stages, across the case matrix
+#   bench/equivalence.sh stage sort        # files a ported stage owns, across the matrix
+#   bench/equivalence.sh stage minimizers  # a stage with no file output, via dumps
 #   bench/equivalence.sh all      # everything
 #
 # Environment:
@@ -499,6 +500,45 @@ cmd_stable() {
 # ISONCLUST_STAGE is an environment variable, not a flag, on purpose: the CLI is
 # a byte-for-byte contract and must not grow options the reference lacks.
 
+
+# `get_kmer_minimizers` never writes a file, so it is compared through a dump on
+# both sides: bench/dump_reference.py against the port's ISONCLUST_STAGE=
+# minimizers, which emit the same format. PORTING.md Finding 5 is why this stage
+# in particular cannot be trusted to end-to-end goldens.
+#
+# Both sides consume the REFERENCE's sorted.fastq, so a difference here is the
+# minimizer selection and not the sort. (`stage sort` already proves the sort.)
+cmd_stage_minimizers() {
+  local pairs=("13 20" "15 50" "9 25" "20 100" "15 15" "4 10")
+  local d="$WORK/mz"
+  rm -rf "$d"; mkdir -p "$d"
+  PYTHONHASHSEED=0 $REF_PYTHON isONclust --k 15 --w 50 --t 1 \
+    --fastq "$CORPUS" --outfolder "$d" >/dev/null 2>&1 || true
+  if [[ ! -s "$d/sorted.fastq" ]]; then
+    bad "could not produce a sorted.fastq from $CORPUS"
+    return
+  fi
+  local kw k w rl pl
+  for kw in "${pairs[@]}"; do
+    k="${kw% *}"; w="${kw#* }"
+    $REF_PYTHON bench/dump_reference.py --stage minimizers \
+      --sorted-fastq "$d/sorted.fastq" --k "$k" --w "$w" > "$d/ref.tsv" 2>/dev/null
+    ISONCLUST_STAGE=minimizers "$PORT_BIN" --k "$k" --w "$w" \
+      --fastq "$d/sorted.fastq" --outfolder "$d/o" > "$d/port.tsv" 2>/dev/null
+    rl=$(wc -l < "$d/ref.tsv" | tr -d ' '); pl=$(wc -l < "$d/port.tsv" | tr -d ' ')
+    if cmp -s "$d/ref.tsv" "$d/port.tsv"; then
+      # Report what the case actually exercised, so a vacuous pass is visible.
+      local empties subk
+      empties=$(awk -F'\t' '$2>=0 && $3=="" ' "$d/ref.tsv" | wc -l | tr -d ' ')
+      subk=$(awk -F'\t' -v k="$k" '$2>=0 && $3!="" && length($3)<k' "$d/ref.tsv" | wc -l | tr -d ' ')
+      ok "k=$k w=$w: $rl minimizers identical (empty: $empties, sub-k: $subk)"
+    else
+      bad "k=$k w=$w: ref $rl lines, port $pl lines"
+      diff "$d/ref.tsv" "$d/port.tsv" | head -6 | sed 's/^/          /' || true
+    fi
+  done
+}
+
 cmd_stage() {
   local which="${1:-sort}"
   echo "==> stage '$which': the files this stage owns, across the case matrix"
@@ -507,6 +547,7 @@ cmd_stage() {
     bad "no port binary at $PORT_BIN"
     return
   fi
+  if [[ "$which" == "minimizers" ]]; then cmd_stage_minimizers; return; fi
   local files
   case "$which" in
     sort) files="sorted.fastq logfile.txt" ;;
@@ -552,8 +593,8 @@ case "${1:-all}" in
   dropped) cmd_dropped ;;
   stable)  cmd_stable ;;
   stage)   cmd_stage "${2:-sort}" ;;
-  all)     cmd_env; cmd_seeds; cmd_cli record; cmd_record; cmd_stable; cmd_stage sort; cmd_verify; cmd_dropped ;;
-  *) echo "usage: $0 {env|seeds|cli [record|verify]|record|verify|dropped|stable|stage [sort]|all}" >&2; exit 2 ;;
+  all)     cmd_env; cmd_seeds; cmd_cli record; cmd_record; cmd_stable; cmd_stage sort; cmd_stage minimizers; cmd_verify; cmd_dropped ;;
+  *) echo "usage: $0 {env|seeds|cli [record|verify]|record|verify|dropped|stable|stage [sort|minimizers]|all}" >&2; exit 2 ;;
 esac
 
 echo
