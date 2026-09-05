@@ -114,6 +114,110 @@ pub fn match_id_tailored(error_rate_sum: f64, k: usize) -> i64 {
     ((1.0 - error_rate_sum) * k as f64).floor() as i64
 }
 
+/// The outcome of the alignment attempt, mirroring the reference's 6-tuple.
+///
+/// On failure the reference returns `(-1, 0, -1, -1, -1, alignment_ratio)` --
+/// and that last value is the ratio from the *last candidate tried*, because
+/// `alignment_ratio` is assigned inside the loop and leaks out of it. Reproduced:
+/// `ratio` is not reset on failure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlignResult {
+    pub best_cluster_id: i64,
+    pub nr_shared_kmers: usize,
+    pub error_rate_sum: f64,
+    pub alignment_ratio: f64,
+}
+
+/// `sum([q.count(c) * phred[c] for c in set(q)])` over the CAPPED table.
+///
+/// Note the two differences from the sorting stage's error rate: this uses the
+/// capped table (`cluster.py`'s `phred_char_to_p`), and it divides by the
+/// *sequence* length rather than the quality length. They are equal for
+/// well-formed input, but the reference writes `len(seq)`, so this does too.
+pub fn expected_errors(qual: &[u8]) -> f64 {
+    let mut counts = [0u32; 256];
+    for &c in qual {
+        counts[c as usize] += 1;
+    }
+    crate::sorting::fsum(
+        counts
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n > 0)
+            .map(|(c, n)| f64::from(*n) * crate::phred::capped(c as u8)),
+    )
+}
+
+/// `get_best_cluster_block_align`.
+///
+/// Only candidates **tied at the top hit count** are tried (`if nm_hits <
+/// top_hits: break`), which is stricter than `get_best_cluster`'s
+/// `min_fraction` walk. The first candidate whose aligned fraction reaches
+/// `--aligned_threshold` wins.
+#[allow(clippy::too_many_arguments)]
+pub fn get_best_cluster_block_align(
+    read_cl_id: usize,
+    hits: &crate::cluster::Hits,
+    seqs: &dyn Fn(usize) -> (Vec<u8>, Vec<u8>),
+    accs: &dyn Fn(usize) -> String,
+    k: usize,
+    aligned_threshold: f64,
+) -> AlignResult {
+    let mut result = AlignResult {
+        best_cluster_id: -1,
+        nr_shared_kmers: 0,
+        error_rate_sum: -1.0,
+        alignment_ratio: 0.0,
+    };
+    if hits.is_empty() {
+        // The reference would raise IndexError on top_matches[0] here; callers
+        // only reach it with a non-empty hit set.
+        return result;
+    }
+
+    let mut top_matches: Vec<usize> = hits.order.clone();
+    top_matches.sort_by(|a, b| {
+        let (ha, hb) = (&hits.by_cluster[a], &hits.by_cluster[b]);
+        let ka = (
+            ha.positions.len(),
+            ha.positions.iter().sum::<usize>(),
+            accs(*a),
+        );
+        let kb = (
+            hb.positions.len(),
+            hb.positions.iter().sum::<usize>(),
+            accs(*b),
+        );
+        kb.cmp(&ka)
+    });
+
+    let (seq, r_qual) = seqs(read_cl_id);
+    let top_hits = hits.by_cluster[&top_matches[0]].positions.len();
+
+    for cl_id in top_matches {
+        let nm_hits = hits.by_cluster[&cl_id].positions.len();
+        if nm_hits < top_hits {
+            break;
+        }
+        let (c_seq, c_qual) = seqs(cl_id);
+        let error_rate_sum = expected_errors(&r_qual) / seq.len() as f64
+            + expected_errors(&c_qual) / c_seq.len() as f64;
+        let open = gap_opening_penalty(error_rate_sum);
+        let match_id = match_id_tailored(error_rate_sum, k);
+        let block = parasail_block_alignment(&seq, &c_seq, k, match_id, open);
+        // The ratio leaks out of the loop in the reference, so keep the last
+        // one tried even when nothing matches.
+        result.alignment_ratio = block.alignment_ratio;
+        if block.alignment_ratio >= aligned_threshold {
+            result.best_cluster_id = cl_id as i64;
+            result.nr_shared_kmers = nm_hits;
+            result.error_rate_sum = error_rate_sum;
+            return result;
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

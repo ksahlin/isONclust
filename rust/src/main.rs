@@ -15,6 +15,7 @@ mod phred;
 mod pyfloat;
 mod pyround;
 mod sorting;
+mod sweep;
 mod text;
 
 use std::io::Write;
@@ -68,10 +69,7 @@ fn main() -> ExitCode {
             ExitCode::from(code as u8)
         }
         cli::Outcome::Run(args) => run(*args),
-        cli::Outcome::WriteFastq(_wf) => {
-            eprintln!("isONclust: write_fastq is not ported yet.");
-            ExitCode::from(3)
-        }
+        cli::Outcome::WriteFastq(wf) => write_fastq(&wf),
     }
 }
 
@@ -98,6 +96,10 @@ fn run(args: cli::Args) -> ExitCode {
     }
 
     let stage = std::env::var("ISONCLUST_STAGE").unwrap_or_default();
+    // With no stage requested and --t 1, the port now runs end to end.
+    if stage.is_empty() && args.nr_cores == 1 {
+        return run_single_core(&args, &outfolder);
+    }
 
     // `minimizers` dumps the same format as `bench/dump_reference.py --stage
     // minimizers`, so the two can be diffed directly. It takes an ALREADY
@@ -130,6 +132,11 @@ fn run(args: cli::Args) -> ExitCode {
         return ExitCode::from(3);
     }
 
+    ExitCode::from(run_sort_stage(&args, &outfolder))
+}
+
+/// The sorting stage. Returns a process exit code; 0 on success.
+fn run_sort_stage(args: &cli::Args, outfolder: &str) -> u8 {
     let k = args.k as usize;
     let sorted_path = std::path::Path::new(&outfolder).join("sorted.fastq");
     let log_path = std::path::Path::new(&outfolder).join("logfile.txt");
@@ -139,18 +146,18 @@ fn run(args: cli::Args) -> ExitCode {
     // leaves it empty (PORTING.md, Finding 8).
     if let Err(e) = std::fs::write(&log_path, "") {
         eprintln!("isONclust: cannot write logfile: {e}");
-        return ExitCode::from(1);
+        return 1;
     }
     if args.use_old_sorted_file && sorted_path.exists() {
         println!("Using already existing sorted file in specified directory, in not intended, specify different outfolder or delete the current file.");
-        return ExitCode::SUCCESS;
+        return 0;
     }
 
     let path = match (&args.fastq, &args.flnc, &args.ccs) {
         (Some(f), _, _) => f.clone(),
         _ => {
             eprintln!("isONclust: the --ccs/--flnc BAM path is not ported (PORTING.md, Scope)");
-            return ExitCode::from(3);
+            return 3;
         }
     };
     let text = match std::fs::read_to_string(&path) {
@@ -159,7 +166,7 @@ fn run(args: cli::Args) -> ExitCode {
             // The reference dies with a traceback here; a message is better and
             // this path is not in the byte-identity contract.
             eprintln!("isONclust: cannot read {path}: {e}");
-            return ExitCode::from(1);
+            return 1;
         }
     };
 
@@ -174,7 +181,7 @@ fn run(args: cli::Args) -> ExitCode {
         );
         eprintln!("TypeError: 'NoneType' object is not iterable. The usual cause is a fastq");
         eprintln!("with no trailing newline on its last line. See PORTING.md, Finding 11.");
-        return ExitCode::from(1);
+        return 1;
     }
 
     let mut scored = sorting::score_reads(&records, k, args.quality_threshold);
@@ -186,7 +193,7 @@ fn run(args: cli::Args) -> ExitCode {
     }
     if let Err(e) = std::fs::write(&sorted_path, &body) {
         eprintln!("isONclust: cannot write sorted.fastq: {e}");
-        return ExitCode::from(1);
+        return 1;
     }
     println!(
         "{} reads passed quality critera (avg phred Q val over {} and length > 2*k) and will be clustered.",
@@ -199,7 +206,7 @@ fn run(args: cli::Args) -> ExitCode {
         Some(contents) => {
             if let Err(e) = std::fs::write(&log_path, contents) {
                 eprintln!("isONclust: cannot write logfile: {e}");
-                return ExitCode::from(1);
+                return 1;
             }
         }
         None => {
@@ -214,10 +221,10 @@ fn run(args: cli::Args) -> ExitCode {
                 pyfloat::repr(args.quality_threshold)
             );
             eprintln!("Lower --q, or check that the input has quality values.");
-            return ExitCode::from(1);
+            return 1;
         }
     }
-    ExitCode::SUCCESS
+    0
 }
 
 /// Dump `(read index, position, minimizer)` for every read, in file order.
@@ -430,5 +437,249 @@ fn replay_parasail() -> ExitCode {
         );
     }
     let _ = out.flush();
+    ExitCode::SUCCESS
+}
+
+/// Strip the score suffix the sorting stage appended:
+/// `"_".join(acc.split("_")[:-1])`.
+fn strip_score(acc: &str) -> &str {
+    match acc.rfind('_') {
+        Some(i) => &acc[..i],
+        // The reference's join of an empty list is "", not the original string.
+        None => "",
+    }
+}
+
+/// The score the sorting stage appended, recovered with `float(acc.split("_")[-1])`.
+fn score_of(acc: &str) -> f64 {
+    acc.rsplit('_')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(f64::NAN)
+}
+
+/// The whole single-core pipeline: sort, sweep, write.
+fn run_single_core(args: &cli::Args, outfolder: &str) -> ExitCode {
+    let k = args.k as usize;
+    let table = match p_emp::Table::select(args.k, args.w) {
+        Some(t) => t,
+        None => {
+            // Finding 13: the reference builds an empty dict and then dies with
+            // KeyError: (0.01, 0.01) partway through clustering.
+            eprintln!(
+                "isONclust: no empirical minimizer probabilities within +-2 of --w {} for --k {}.",
+                args.w, args.k
+            );
+            eprintln!("The reference reaches this too, and fails with KeyError: (0.01, 0.01).");
+            return ExitCode::from(1);
+        }
+    };
+
+    // --- the sorting stage, as ISONCLUST_STAGE=sort does it ---
+    let rc = run_sort_stage(args, outfolder);
+    if rc != 0 {
+        return ExitCode::from(rc);
+    }
+    let sorted_path = std::path::Path::new(outfolder).join("sorted.fastq");
+    let text = match std::fs::read_to_string(&sorted_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("isONclust: cannot read {}: {e}", sorted_path.display());
+            return ExitCode::from(1);
+        }
+    };
+    // The reference re-reads sorted.fastq rather than reusing the in-memory
+    // array, and the score is recovered from the accession. Reproduced, because
+    // the accession the sweep sees is the one WITH the score suffix.
+    let records = fastq::read(&text);
+    let reads: Vec<sorting::Scored> = records
+        .iter()
+        .map(|r| sorting::Scored {
+            acc: r.name.clone(),
+            seq: r.seq.clone(),
+            qual: r.qual.clone().unwrap_or_default(),
+            score: score_of(&r.name),
+            error_rate: f64::NAN,
+        })
+        .collect();
+
+    let res = sweep::reads_to_clusters(
+        &reads,
+        k,
+        args.w as usize,
+        &table,
+        args.min_shared,
+        args.min_fraction,
+        args.min_prob_no_hits,
+        args.mapped_threshold,
+        args.aligned_threshold,
+    );
+
+    // --- write output, ordered by (cluster size, representative score) desc ---
+    //
+    // `sorted(..., reverse=True)` is stable and does NOT reverse ties, so equal
+    // (size, score) pairs keep dict insertion order -- which after the
+    // reassignment step is ascending cluster id. Hence the third key.
+    let mut order: Vec<usize> = res.clusters.iter().map(|(i, _)| *i).collect();
+    let by_id: std::collections::HashMap<usize, &Vec<String>> =
+        res.clusters.iter().map(|(i, v)| (*i, v)).collect();
+    order.sort_by(|a, b| {
+        let ka = (by_id[a].len(), res.representatives[a].score);
+        let kb = (by_id[b].len(), res.representatives[b].score);
+        kb.0.cmp(&ka.0)
+            .then(kb.1.partial_cmp(&ka.1).expect("scores are finite"))
+            .then(a.cmp(b))
+    });
+
+    let mut clusters_out = String::new();
+    let mut origins_out = String::new();
+    let mut nontrivial = 0usize;
+    for (output_cl_id, c_id) in order.iter().enumerate() {
+        let rep = &res.representatives[c_id];
+        origins_out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\n",
+            output_cl_id,
+            strip_score(&rep.acc),
+            String::from_utf8_lossy(&rep.seq),
+            String::from_utf8_lossy(&rep.qual),
+            pyfloat::repr(rep.score),
+            pyfloat::repr(rep.error_rate),
+        ));
+        let mut members: Vec<&String> = by_id[c_id].iter().collect();
+        // sorted(all_read_acc, key=float(...), reverse=True) -- stable, so ties
+        // keep the order they were added in.
+        members.sort_by(|a, b| {
+            score_of(b)
+                .partial_cmp(&score_of(a))
+                .expect("scores parse from the accession")
+        });
+        for acc in &members {
+            clusters_out.push_str(&format!("{}\t{}\n", output_cl_id, strip_score(acc)));
+        }
+        if by_id[c_id].len() > 1 {
+            nontrivial += 1;
+        }
+    }
+
+    let cp = std::path::Path::new(outfolder).join("final_clusters.tsv");
+    let op = std::path::Path::new(outfolder).join("final_cluster_origins.tsv");
+    if let Err(e) = std::fs::write(&cp, clusters_out).and_then(|_| std::fs::write(&op, origins_out))
+    {
+        eprintln!("isONclust: cannot write output: {e}");
+        return ExitCode::from(1);
+    }
+
+    println!("Total number of reads iterated through:{}", reads.len());
+    println!("Passed mapping criteria:{}", res.mapped_passed);
+    println!(
+        "Passed alignment criteria in this process:{}",
+        res.aln_passed
+    );
+    println!(
+        "Total calls to alignment mudule in this process:{}",
+        res.aln_called
+    );
+    println!("Nr clusters larger than 1: {}", nontrivial);
+    println!("Nr clusters (all): {}", order.len());
+    ExitCode::SUCCESS
+}
+
+/// The `write_fastq` subcommand: split a clustering into per-cluster fastq files.
+///
+/// Two details that matter:
+///
+/// * **Cluster ids stay strings.** The reference reads them from the file and
+///   uses them unparsed as the filename (`str(cl_id) + ".fastq"`), so a file
+///   holding `007` would produce `007.fastq`. Parsing to an integer here would
+///   quietly rename it.
+/// * **The output order is the order ids first appear in the clusters file**,
+///   because the reference iterates a `defaultdict`. It decides only which file
+///   is created first, but it is free to preserve.
+///
+/// Accessions in the clusters file have had their score suffix stripped, and are
+/// looked up in the ORIGINAL fastq -- not `sorted.fastq` -- so they match the
+/// input's own read names.
+fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
+    let (clusters_path, fastq_path, outfolder) = match (&wf.clusters, &wf.fastq, &wf.outfolder) {
+        (Some(c), Some(f), Some(o)) => (c, f, o),
+        _ => {
+            // The reference dies with a TypeError from os.path.join(None, ...).
+            eprintln!(
+                "isONclust write_fastq: --clusters, --fastq and --outfolder are all required"
+            );
+            return ExitCode::from(1);
+        }
+    };
+
+    let ctext = match std::fs::read_to_string(clusters_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("isONclust: cannot read {clusters_path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let mut order: Vec<String> = Vec::new();
+    let mut members: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for line in ctext.lines() {
+        // `line.strip().split()` -- any whitespace, and blank lines vanish.
+        let mut it = line.split_whitespace();
+        let (cl_id, acc) = match (it.next(), it.next()) {
+            (Some(a), Some(b)) => (a, b),
+            _ => continue,
+        };
+        members
+            .entry(cl_id.to_string())
+            .or_insert_with(|| {
+                order.push(cl_id.to_string());
+                Vec::new()
+            })
+            .push(acc.to_string());
+    }
+
+    let ftext = match std::fs::read_to_string(fastq_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("isONclust: cannot read {fastq_path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let mut reads: std::collections::HashMap<String, (String, String)> =
+        std::collections::HashMap::new();
+    for r in fastq::read(&ftext) {
+        reads.insert(r.name, (r.seq, r.qual.unwrap_or_default()));
+    }
+
+    if let Err(e) = std::fs::create_dir_all(outfolder) {
+        eprintln!("isONclust: cannot create {outfolder}: {e}");
+        return ExitCode::from(1);
+    }
+    for cl_id in &order {
+        let accs = &members[cl_id];
+        if (accs.len() as i64) < wf.n {
+            continue;
+        }
+        let mut body = String::new();
+        for acc in accs {
+            match reads.get(acc) {
+                Some((seq, qual)) => {
+                    body.push_str(&format!("@{acc}\n{seq}\n+\n{qual}\n"));
+                }
+                None => {
+                    // The reference raises KeyError here.
+                    eprintln!(
+                        "isONclust: read {acc:?} is in {clusters_path} but not in {fastq_path}"
+                    );
+                    return ExitCode::from(1);
+                }
+            }
+        }
+        let path = std::path::Path::new(outfolder).join(format!("{cl_id}.fastq"));
+        if let Err(e) = std::fs::write(&path, body) {
+            eprintln!("isONclust: cannot write {}: {e}", path.display());
+            return ExitCode::from(1);
+        }
+    }
+    println!("Wrote clusters to separate fastq files.");
     ExitCode::SUCCESS
 }

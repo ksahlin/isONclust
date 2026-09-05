@@ -116,11 +116,11 @@ that wrote it.
 | Python `round(x, 2)` | **done** | `pyround.rs`; 100 602 values checked against CPython |
 | empirical probability table | **done, frozen** | 437 KB blob generated from the 2.5 MB Python literal; *Finding 13* |
 | `parasail_block_alignment` | **done** | 18 633 alignments identical — CIGAR *and* ratio — across four corpora and three of the four gap penalties. `parasail.rs` carried across from isONform |
-| `get_best_cluster_block_align` | not started | the candidate walk around the alignment |
-| `reads_to_clusters` (the driver) | not started | |
-| output writers, cluster ordering | not started | |
-| `parallelize.parallel_clustering` (`--t > 1`) | not started | semantic, not a speed knob; *Finding 3* |
-| `write_fastq` | CLI only | parsing and its error paths are verified; the file-writing is not ported |
+| `get_best_cluster_block_align` | **done** | covered end to end |
+| `reads_to_clusters` (the driver) | **done** | **21 of 27 output cases byte-identical end to end**; the 6 failures are all `--t > 1` |
+| output writers, cluster ordering | **done** | all four output files byte-identical on smoke, `sirv_real_10k`, `sirv_pacbio` and `droso_20k` |
+| `parallelize.parallel_clustering` (`--t > 1`) | **not started — the only remaining gap** | semantic, not a speed knob; *Finding 3*. Accounts for all 6 failing cases |
+| `write_fastq` | **done** | 3 cases, 76/22/12 files each, byte-identical |
 | `--consensus` (spoa + RC detection) | **dropped — will not be implemented** | *Scope*. `equivalence.sh dropped` asserts non-zero exit and the flag named |
 | `--ccs`/`--flnc` (BAM input) | not started | needs a BAM reader; *Scope* |
 
@@ -509,6 +509,32 @@ check of the first few reads — would have passed. The comparison has to be the
 The stage report also prints how many empty and sub-k minimizers each case actually exercised, so a
 pass on a corpus that never reaches *Finding 4* says so rather than looking like coverage: the smoke
 corpus reports `empty: 0, sub-k: 0` at every setting, and `droso_20k` reports up to 1687 and 152.
+
+## Where the port stands, measured
+
+**The single-core path is complete and byte-identical.** All four output files —
+`final_clusters.tsv`, `final_cluster_origins.tsv`, `sorted.fastq`, `logfile.txt` — match the
+reference exactly:
+
+| corpus | reads | clusters | result | reference | port | ratio |
+| --- | --- | --- | --- | --- | --- | --- |
+| `smoke` | 120 | 40 | identical | — | — | — |
+| `sirv_real_10k` | 9 972 | 763 | identical | 4.3 s | 4.2 s | **1.00x** |
+| `droso_20k` | 19 938 | 5 679 | identical | 15.6 s | 34.3 s | **0.46x** |
+| `sirv_pacbio` | 17 633 | — | identical | 23.4 s | 86.8 s | **0.27x** |
+
+21 of 27 equivalence cases pass; the 6 that do not are all `--t > 1`, which is not ported.
+
+**The port is currently slower than the reference wherever alignment dominates**, exactly as the
+aligner measurements predicted: parity on `sirv_real_10k` (8144 of its reads are decided by mapping,
+only 1806 by alignment), 2.2x slower on `droso_20k` (10 309 alignments) and 3.7x slower on
+`sirv_pacbio` (5485 alignments on long CCS reads). The 12–15x won on the sorting stage does not pay
+for a 15x-slower exact aligner.
+
+This is the expected consequence of choosing exactness first and it is not a surprise, but it should
+not be glossed: **a faster aligner is now the single highest-value piece of work**, and it is
+blocked only by the byte-identity goal, not by anything unknown. See *The aligner* under *Deferred
+improvements*.
 
 ## Findings in the reference
 
