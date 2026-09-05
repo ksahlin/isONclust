@@ -10,6 +10,7 @@
 #   bench/equivalence.sh verify   # run the port, diff against the goldens
 #   bench/equivalence.sh dropped  # the port must refuse the out-of-scope flags
 #   bench/equivalence.sh stable   # recording twice must give identical goldens
+#   bench/equivalence.sh stage sort  # the ported stages, across the case matrix
 #   bench/equivalence.sh all      # everything
 #
 # Environment:
@@ -488,6 +489,58 @@ cmd_stable() {
     done <<<"$unstable"
   fi
 }
+
+# ---------------------------------------------------------------------------
+# Per-stage verification. The port cannot produce final_clusters.tsv yet, so
+# `verify` fails every output case -- which says nothing about the stages that
+# ARE done. This checks the files the ported stages actually own, across the
+# same case matrix.
+#
+# ISONCLUST_STAGE is an environment variable, not a flag, on purpose: the CLI is
+# a byte-for-byte contract and must not grow options the reference lacks.
+
+cmd_stage() {
+  local which="${1:-sort}"
+  echo "==> stage '$which': the files this stage owns, across the case matrix"
+  check_cases
+  if [[ ! -x "$PORT_BIN" ]]; then
+    bad "no port binary at $PORT_BIN"
+    return
+  fi
+  local files
+  case "$which" in
+    sort) files="sorted.fastq logfile.txt" ;;
+    *) bad "unknown stage '$which'"; return ;;
+  esac
+
+  while IFS=$'\t' read -r name entry args; do
+    [[ "$name" =~ ^# ]] && continue
+    [[ -z "${name// }" ]] && continue
+    # write_fastq does not run the sorting stage at all
+    [[ "$entry" == "write_fastq" ]] && continue
+    local r="$WORK/stage_ref/$name" p="$WORK/stage_port/$name"
+    rm -rf "$r" "$p"; mkdir -p "$r" "$p"
+    PYTHONHASHSEED=0 $REF_PYTHON isONclust $args --fastq "$CORPUS" --outfolder "$r" \
+      >/dev/null 2>&1 || true
+    ISONCLUST_STAGE="$which" "$PORT_BIN" $args --fastq "$CORPUS" --outfolder "$p" \
+      >/dev/null 2>&1 || true
+    local bad_files=()
+    for f in $files; do
+      if [[ ! -f "$r/$f" && ! -f "$p/$f" ]]; then continue; fi
+      cmp -s "$r/$f" "$p/$f" 2>/dev/null || bad_files+=("$f")
+    done
+    if [[ ${#bad_files[@]} -eq 0 ]]; then
+      ok "$name"
+    else
+      bad "$name: ${bad_files[*]}"
+      for f in "${bad_files[@]}"; do
+        [[ -f "$r/$f" && -f "$p/$f" ]] || { info "  one side missing $f"; continue; }
+        info "  --- $f ---"
+        diff "$r/$f" "$p/$f" | head -4 | sed 's/^/          /' || true
+      done
+    fi
+  done < bench/cases.tsv
+}
 # ---------------------------------------------------------------------------
 
 case "${1:-all}" in
@@ -498,8 +551,9 @@ case "${1:-all}" in
   verify)  cmd_verify ;;
   dropped) cmd_dropped ;;
   stable)  cmd_stable ;;
-  all)     cmd_env; cmd_seeds; cmd_cli record; cmd_record; cmd_stable; cmd_verify; cmd_dropped ;;
-  *) echo "usage: $0 {env|seeds|cli [record|verify]|record|verify|dropped|stable|all}" >&2; exit 2 ;;
+  stage)   cmd_stage "${2:-sort}" ;;
+  all)     cmd_env; cmd_seeds; cmd_cli record; cmd_record; cmd_stable; cmd_stage sort; cmd_verify; cmd_dropped ;;
+  *) echo "usage: $0 {env|seeds|cli [record|verify]|record|verify|dropped|stable|stage [sort]|all}" >&2; exit 2 ;;
 esac
 
 echo

@@ -106,8 +106,10 @@ that wrote it.
 | case matrix swept on all three corpora | **done** | `droso_20k` has 22 of 24 distinct results and **zero** unintended collisions — develop against it |
 | repository slimmed and pushed | **done** | 492 MB → fresh clone at 4.8 MB |
 | CLI parity | **done** | 23 differential cases green on the first run, 17 unit tests, clippy `-D warnings` and `cargo fmt` clean |
-| `readfq` | not started | |
-| quality scoring + score sort (`sorted.fastq`) | not started | |
+| `readfq` | **done** | 6 unit tests, incl. the no-trailing-newline path (*Finding 11*) |
+| quality scoring + score sort (`sorted.fastq`) | **done** | `sorted.fastq` and `logfile.txt` byte-identical on 24 cases × 3 corpora, and on 10 configurations spanning ~257 000 reads. 12–15x faster |
+| Python `str(float)` | **done** | `pyfloat.rs`; 39 997 values differentially checked against CPython |
+| phred tables | **done, frozen** | *Finding 12*; 256 entries checked against the reference |
 | `get_kmer_minimizers` | not started | needs a dump oracle regardless, but the corpus can now see it (*Finding 5*) |
 | `get_all_hits` | not started | |
 | `get_best_cluster` (the mapping decision) | not started | |
@@ -760,6 +762,69 @@ That last row is the check worth copying: a bug fix in the reference is a behavi
 to be measured against the full matrix on a corpus that reaches it, not just against the case that
 crashed. The port therefore targets the fixed behaviour, and the goldens were re-recorded — which on
 the smoke corpus changed nothing at all.
+
+### Finding 11 — a fastq without a trailing newline crashes the tool
+
+`readfq` truncates each line with `l[:-1]`, which removes the last character
+unconditionally rather than stripping a newline. On the final line of a file that
+does not end in one, the running quality length never reaches `len(seq)`, the loop hits EOF, and the
+reference falls through to `yield name, (seq, None)`.
+
+The caller does not guard it. Measured, on a two-read fastq with no trailing newline:
+
+| | exit | result |
+| --- | --- | --- |
+| with trailing newline | 0 | 2 reads clustered |
+| **without** | **1** | `TypeError: 'NoneType' object is not iterable` |
+
+Files get truncated, hand-edited and generated without a final newline all the time, so this is easy
+to hit and gives a traceback rather than an explanation. It is *not* fixed here, unlike *Finding 9*:
+the sensible fix is to parse the last record properly, which lets an extra read into the clustering
+and therefore changes results for such files. That is a behaviour change with an accuracy question
+attached, so it belongs in *Deferred improvements* and needs the owner's call.
+
+The port reproduces the failure and says why.
+
+Worth noting how this was found: the first version of the port's unit test asserted that the last
+*quality value* was dropped, which is what reading the code suggests. Asking the reference showed the
+whole quality string is dropped instead. The test was wrong, not the port.
+
+### Finding 12 — Rust's `powf` and CPython's `**` differ by one ULP, and only real ONT reads notice
+
+The sorting stage was byte-identical on the smoke corpus, on both simulated SIRV corpora, and on real
+PacBio CCS — and **differed on every real ONT corpus**, in the 13th significant digit of the score:
+
+```
+@read_37_..._strand=+_652.3743164321687     reference
+@read_37_..._strand=+_652.3743164321701     port
+```
+
+The cause is one entry of the 95-entry phred table. `10 ** (-(ord(c) - 33) / 10.0)` for `%`
+(phred 4, i.e. `10 ** -0.4`):
+
+| how it is computed | bits |
+| --- | --- |
+| CPython `10 ** -0.4` | `3fd97a967f7524b2` |
+| Rust `10f64.powf(x)` at runtime | `3fd97a967f7524b3` |
+| C `pow(10.0, -0.4)` against this machine's libm | `3fd97a967f7524b3` |
+| Rust `powf` on a literal (LLVM constant-folds it) | `3fd97a967f7524b2` |
+
+One value of 95, one ULP — and `%` is an ordinary ONT quality character that simulated reads and
+PacBio CCS reads happen not to contain. The error then compounds through
+`expected_number_of_erroneous_kmers`'s rolling product, which is why it surfaces at 1e-14 rather than
+1e-16.
+
+**The deeper finding is about the reference, not the port:** CPython disagrees with this machine's own
+C library, so the reference's value depends on which libm its interpreter was built against. The
+reference is not portable here either, and neither would a port be that computed the table.
+
+Resolved by freezing both tables as generated constants (`rust/src/phred.rs`), exactly as the
+argparse text is frozen. That makes the port reproducible on every platform and identical to the
+pinned reference. `rust/tests/phred_oracle.rs` re-checks all 256 entries against the live reference,
+so a changed environment fails a test instead of drifting silently.
+
+**This is what the corpus sweep was for.** Four of seven corpora agreed while the port was wrong. Had
+`sample_alz_2k` still been the only corpus — PacBio CCS, no `%` — this would have shipped.
 
 ### Finding 10 — harness bugs found while building the harness, both silent
 
