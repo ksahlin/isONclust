@@ -40,7 +40,7 @@ fn kmer(seq: &[u8], i: usize, k: usize) -> &[u8] {
 ///
 /// Returns `(minimizer, position)` pairs in the reference's order. Positions are
 /// offsets into `seq`, which the caller has already homopolymer-compressed.
-pub fn get_kmer_minimizers<'a>(seq: &'a [u8], k: usize, w_size: usize) -> Vec<(&'a [u8], usize)> {
+pub fn get_kmer_minimizers(seq: &[u8], k: usize, w_size: usize) -> Vec<(&[u8], usize)> {
     // `w = w_size - k_size`. The CLI guarantees w_size >= k, so this cannot
     // wrap, but saturating_sub keeps the function total for direct callers.
     let w = w_size.saturating_sub(k);
@@ -49,8 +49,9 @@ pub fn get_kmer_minimizers<'a>(seq: &'a [u8], k: usize, w_size: usize) -> Vec<(&
     // the end are short or empty. Reproduced.
     let mut window: std::collections::VecDeque<&[u8]> = (0..=w).map(|i| kmer(seq, i, k)).collect();
 
-    let mut curr_min: &[u8] = *window
+    let mut curr_min: &[u8] = window
         .iter()
+        .copied()
         .min()
         .expect("the window always holds at least one entry");
     let first_idx = window
@@ -71,7 +72,7 @@ pub fn get_kmer_minimizers<'a>(seq: &'a [u8], k: usize, w_size: usize) -> Vec<(&
             // The previous minimum has left the window *by value*, so recompute
             // brute force. Note this fires on equality, not identity, so a
             // repeated k-mer can re-emit the same pair.
-            curr_min = *window.iter().min().expect("window is non-empty");
+            curr_min = window.iter().copied().min().expect("window is non-empty");
             let idx = window
                 .iter()
                 .position(|x| *x == curr_min)
