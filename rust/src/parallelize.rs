@@ -130,6 +130,7 @@ pub struct ParallelResult {
     /// prints one line per read to stdout; a count is more useful and stdout is
     /// not in the byte-identity contract.
     pub skipped_short: usize,
+    pub times: sweep::StageTimes,
 }
 
 /// `parallel_clustering`.
@@ -178,6 +179,7 @@ pub fn parallel_clustering(
         aln_passed: 0,
         aln_called: 0,
         skipped_short: 0,
+        times: sweep::StageTimes::default(),
     };
 
     let mut it = 1usize;
@@ -198,6 +200,7 @@ pub fn parallel_clustering(
             out.aln_passed += res.aln_passed;
             out.aln_called += res.aln_called;
             out.skipped_short += res.skipped_short;
+            out.times.add(&res.times);
             out.clusters = res.clusters;
             out.representatives = res.representatives;
             return out;
@@ -241,6 +244,7 @@ pub fn parallel_clustering(
             out.aln_passed += res.aln_passed;
             out.aln_called += res.aln_called;
             out.skipped_short += res.skipped_short;
+            out.times.add(&res.times);
         }
 
         // merge_dicts: later dicts win, but the batches are disjoint by read id.

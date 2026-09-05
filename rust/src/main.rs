@@ -594,7 +594,13 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
         (
             r.clusters,
             r.representatives,
-            (r.mapped_passed, r.aln_passed, r.aln_called, r.skipped_short),
+            (
+                r.mapped_passed,
+                r.aln_passed,
+                r.aln_called,
+                r.skipped_short,
+                r.times,
+            ),
         )
     } else {
         let mut clusters = sweep::OrderedClusters::default();
@@ -632,6 +638,7 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
                 res.aln_passed,
                 res.aln_called,
                 res.skipped_short,
+                res.times,
             ),
         )
     };
@@ -685,7 +692,10 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
         eprintln!("isONclust: cannot write output: {e}");
         return ExitCode::from(1);
     }
-    let (mapped_passed, aln_passed, aln_called, skipped_short) = stats;
+    let (mapped_passed, aln_passed, aln_called, skipped_short, times) = stats;
+    if std::env::var("ISONCLUST_PROFILE").is_ok() {
+        times.report(&format!("--t {}", args.nr_cores));
+    }
 
     println!("Total number of reads iterated through:{}", reads.len());
     println!("Passed mapping criteria:{}", mapped_passed);

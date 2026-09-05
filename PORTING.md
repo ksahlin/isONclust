@@ -592,64 +592,98 @@ README says 94 — before any of this was trusted.
 
 ### Speed and memory
 
-| corpus | tool | `--t` | secs | peak MB | clusters |
-| --- | --- | --- | --- | --- | --- |
-| `sirv_real_10k` | python | 1 | 4.20 | 229 | 36 |
-| | **port** | 1 | 4.65 | **122** | 36 |
-| | isONclust3 | — | **0.63** | **32** | 66 |
-| | python | 8 | 1.26 | 198 | 30 |
-| | **port** | 8 | 1.42 | **158** | 30 |
-| `droso_20k` | python | 1 | 15.39 | 688 | 5679 |
-| | **port** | 1 | 36.10 | **332** | 5679 |
-| | isONclust3 | — | **1.56** | **203** | 6424 |
-| | python | 8 | 6.99 | 824 | 5538 |
-| | **port** | 8 | 19.34 | **574** | 5538 |
+Each corpus is run with **its own preset** — `--ont` (k13 w20) for ONT, `--isoseq` (k15 w50) for
+PacBio, and the matching `--mode` for isONclust3. Getting that wrong was a real mistake here: the
+first PacBio numbers were taken with ONT parameters, which benchmarks a configuration nobody runs.
+`bench/corpora.tsv` now carries a preset column so it cannot be forgotten.
 
-* **The port halves memory** — consistently 40–50% of the reference, which is the one dimension it
-  wins outright today.
-* **The port is at parity on `sirv_real_10k` and 2.3–2.8x slower on `droso_20k`.** The difference
-  between those two corpora is the alignment path: `droso_20k` runs 10 309 alignments against
-  `sirv_real_10k`'s 1806. It is the exact aligner, and nothing else.
-* **isONclust3 is 6.6x faster than the reference on `sirv_real_10k` and 10x on `droso_20k`**, at
-  4–7x less memory. It is a different algorithm; this is not a porting gap.
+| corpus | preset | tool | `--t` | secs | peak MB | clusters |
+| --- | --- | --- | --- | --- | --- | --- |
+| `sirv_real_10k` | ont | python | 1 | 4.27 | 186 | 36 |
+| | | **port** | 1 | 5.60 | **114** | 36 |
+| | | isONclust3 | — | **0.65** | **32** | 66 |
+| | | python | 8 | 1.29 | 196 | 30 |
+| | | **port** | 8 | **1.27** | **164** | 30 |
+| `sirv_pacbio` | isoseq | python | 1 | 23.32 | 1045 | 151 |
+| | | **port** | 1 | 84.58 | **625** | 151 |
+| | | isONclust3 | — | **1.67** | **121** | 163 |
+| | | python | 8 | 7.01 | 463 | 110 |
+| | | **port** | 8 | 36.99 | 664 | 110 |
+| `droso_20k` | ont | python | 1 | 15.66 | 711 | 5679 |
+| | | **port** | 1 | 42.75 | **314** | 5679 |
+| | | isONclust3 | — | **1.54** | **203** | 6424 |
+| | | python | 8 | 7.07 | 821 | 5538 |
+| | | **port** | 8 | 21.47 | **555** | 5538 |
 
-### Accuracy, and why the verdict depends on the truth level
+* **The port roughly halves memory** — 40–60% of the reference on every corpus except
+  `sirv_pacbio --t 8`, where the eight resident batches cost more than the reference's eight
+  processes do.
+* **Speed tracks the alignment count and nothing else.** Parity on `sirv_real_10k` (1806 alignments),
+  2.7–3.0x slower on `droso_20k` (11 241), 3.6–5.3x slower on `sirv_pacbio` (5485 alignments on long
+  CCS reads, which are quadratic in read length).
+* **isONclust3 is 6.6–14x faster at 4–6x less memory** on every corpus. It is a different algorithm.
 
-`sirv_real_10k`, 9998 reads with truth from minimap2 against the SIRV transcriptome.
+### Where the port's time actually goes
 
-**Gene level — 7 classes, which is what isONclust says it targets** ("each cluster represents all
-reads that came from a gene"):
+Sampling could not answer this: at `--release` the stage functions inline into
+`reads_to_clusters`, so `sample` attributes 94–99.7% of everything to that one symbol. Explicit
+stage timers (`ISONCLUST_PROFILE=1`) can:
 
-| tool | clusters | homogeneity | completeness | V | ARI |
-| --- | --- | --- | --- | --- | --- |
-| python / port `--t 1` | 36 | 1.0000 | 0.5729 | **0.7285** | 0.5681 |
-| python / port `--t 8` | 30 | 1.0000 | 0.6472 | **0.7858** | **0.7338** |
-| isONclust3 | 66 | 1.0000 | 0.5005 | 0.6671 | 0.3119 |
+| corpus | alignment | mapping decision | hit collection | minimizers | error rate | db insert |
+| --- | --- | --- | --- | --- | --- | --- |
+| `sirv_real_10k` | **98.1%** | 0.1% | 0.6% | 0.9% | 0.4% | 0.0% |
+| `droso_20k` | **96.1%** | 2.1% | 1.3% | 0.2% | 0.1% | 0.2% |
+| `sirv_pacbio` | **99.6%** | 0.0% | 0.1% | 0.2% | 0.1% | 0.0% |
 
-**Transcript level — 68 classes:**
+**Nothing except the aligner is worth optimising.** Note this holds even on `sirv_real_10k`, where
+only 1806 of 9972 reads are *decided* by alignment — each alignment costs milliseconds while
+everything else costs microseconds, so a path taken by 18% of reads consumes 98% of the time.
 
-| tool | clusters | homogeneity | completeness | V | ARI |
-| --- | --- | --- | --- | --- | --- |
-| python / port `--t 1` | 36 | 0.6479 | 0.9167 | 0.7592 | 0.3014 |
-| isONclust3 | 66 | 0.7441 | 0.9197 | **0.8226** | **0.6025** |
+### Accuracy, and why the verdict depends on both the truth level and the platform
 
-**The two levels disagree about which tool is better, and both are right.** isONclust1 clusters at
-roughly gene resolution (36 clusters for 7 genes) and isONclust3 at roughly transcript resolution
-(66 clusters for 68 transcripts). Judged against genes isONclust1 wins on every metric; judged
-against transcripts isONclust3 wins on V and doubles the ARI. Neither is a defect — they are
-answering different questions, and a comparison that reported only one level would be misleading.
+Truth from `minimap2` against the SIRV transcriptome, scored at gene level (what isONclust says it
+targets: "each cluster represents all reads that came from a gene") and at transcript level.
 
-**The port reproduces the reference's accuracy exactly, by construction**, at every setting. Any
-difference in those rows would be a port bug, and `benchmark.sh` diffs the two clusterings directly
-and says so rather than reporting it as an accuracy result.
+**SIRV ONT, 9998 reads:**
 
-**An unexpected finding worth following up:** `--t 8` is not just faster than `--t 1`, it is *more
-accurate* on this corpus — V 0.7858 against 0.7285 and ARI 0.7338 against 0.5681 at gene level. The
-hierarchical batch-and-merge is doing something useful rather than merely approximating the single
-pass. That inverts the usual assumption about a parallel mode and deserves measuring across more
-corpora before anything is concluded from it.
+| truth | tool | clusters | homogeneity | completeness | V | ARI |
+| --- | --- | --- | --- | --- | --- | --- |
+| gene (7) | isONclust1 `--t 1` | 36 | 1.0000 | 0.5729 | **0.7285** | 0.5681 |
+| | isONclust1 `--t 8` | 30 | 1.0000 | 0.6472 | **0.7858** | **0.7338** |
+| | isONclust3 | 66 | 1.0000 | 0.5005 | 0.6671 | 0.3119 |
+| transcript (68) | isONclust1 `--t 1` | 36 | 0.6479 | 0.9167 | 0.7592 | 0.3014 |
+| | isONclust3 | 66 | 0.7441 | 0.9197 | **0.8226** | **0.6025** |
 
-## Findings in the reference
+**SIRV PacBio, 14 783 reads:**
+
+| truth | tool | clusters | homogeneity | completeness | V | ARI |
+| --- | --- | --- | --- | --- | --- | --- |
+| gene (7) | isONclust1 `--t 1` | 151 | 1.0000 | 0.6853 | **0.8132** | **0.7138** |
+| | isONclust1 `--t 8` | 110 | 1.0000 | 0.6933 | **0.8189** | **0.7259** |
+| | isONclust3 | 163 | 0.6482 | 0.6503 | 0.6492 | 0.3578 |
+| transcript (66) | isONclust1 `--t 1` | 151 | 0.6505 | 0.9708 | **0.7790** | **0.3733** |
+| | isONclust3 | 163 | 0.4459 | 0.9744 | 0.6119 | 0.1175 |
+
+**Adding PacBio changed the conclusion.** On ONT the two tools split — isONclust1 wins at gene level,
+isONclust3 at transcript level — and it would have been easy to write that up as "they target
+different granularities, pick by what you need". On PacBio isONclust1 wins at **both** levels, and
+not narrowly: V 0.78 against 0.61 and ARI 0.37 against 0.12 at transcript level, where isONclust3
+had been ahead on ONT. Its homogeneity in particular collapses (0.4459), meaning its clusters mix
+transcripts, which is the opposite of its ONT behaviour.
+
+A single-platform comparison would have been misleading in a way no amount of care within that
+platform could have caught. This is the "three corpora, because one lies" rule with *platform* as the
+axis rather than depth.
+
+**The port reproduces the reference exactly at every setting**, so it has no accuracy row of its own;
+`benchmark.sh` diffs the two clusterings and reports a difference as a bug, not a result.
+
+**Still unexplained and worth following up:** `--t 8` is not just faster than `--t 1` but *more
+accurate*, on both platforms — ONT V 0.7858 against 0.7285, PacBio 0.8189 against 0.8132, and ARI up
+in both. The hierarchical batch-and-merge is doing something useful rather than approximating the
+single pass.
+
+## Findings in the reference## Findings in the reference
 
 Everything here was measured in the pinned environment, not inferred from reading. Each finding names
 the corpus it was measured on, because that turned out to matter more than expected — see *Finding 5*.

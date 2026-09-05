@@ -134,6 +134,63 @@ pub struct SweepParams {
     pub aligned_threshold: f64,
 }
 
+/// Per-stage wall clock, for `ISONCLUST_PROFILE=1`.
+///
+/// Explicit timers rather than a sampling profiler: at `--release` the stage
+/// functions inline into `reads_to_clusters`, so `sample` attributes 94-99% of
+/// everything to one symbol and cannot separate them. Method point 5 also says
+/// to *remove* sub-stage instrumentation after reading it -- these are cheap
+/// (one `Instant::now` per read per stage, not per inner loop) and off unless
+/// asked for, but they should not outlive their usefulness.
+#[derive(Default, Clone, Copy)]
+pub struct StageTimes {
+    pub minimizers: std::time::Duration,
+    pub error_rate: std::time::Duration,
+    pub hits: std::time::Duration,
+    pub mapping: std::time::Duration,
+    pub alignment: std::time::Duration,
+    pub db_insert: std::time::Duration,
+}
+
+impl StageTimes {
+    pub fn add(&mut self, o: &StageTimes) {
+        self.minimizers += o.minimizers;
+        self.error_rate += o.error_rate;
+        self.hits += o.hits;
+        self.mapping += o.mapping;
+        self.alignment += o.alignment;
+        self.db_insert += o.db_insert;
+    }
+    pub fn report(&self, label: &str) {
+        let total = self.minimizers
+            + self.error_rate
+            + self.hits
+            + self.mapping
+            + self.alignment
+            + self.db_insert;
+        let t = total.as_secs_f64().max(1e-9);
+        eprintln!(
+            "  stage profile ({label}), {:.2}s accounted for:",
+            total.as_secs_f64()
+        );
+        for (name, d) in [
+            ("alignment (parasail)", self.alignment),
+            ("mapping decision", self.mapping),
+            ("minimizers", self.minimizers),
+            ("hit collection", self.hits),
+            ("compressed error rate", self.error_rate),
+            ("database insert", self.db_insert),
+        ] {
+            eprintln!(
+                "    {:<24} {:7.2}s  {:5.1}%",
+                name,
+                d.as_secs_f64(),
+                100.0 * d.as_secs_f64() / t
+            );
+        }
+    }
+}
+
 /// What one sweep returns, mirroring the reference's
 /// `{new_batch_index: (clusters, representatives, minimizer_database, new_batch_index)}`.
 pub struct SweepResult {
@@ -145,6 +202,7 @@ pub struct SweepResult {
     pub aln_passed: usize,
     pub aln_called: usize,
     pub skipped_short: usize,
+    pub times: StageTimes,
 }
 
 /// The compressed quality string: one character per homopolymer run, the best of
@@ -211,6 +269,20 @@ pub fn reads_to_clusters(
     let mut out_aln_passed = 0usize;
     let mut out_aln_called = 0usize;
     let mut skipped_short = 0usize;
+    let mut times = StageTimes::default();
+    let profiling = std::env::var("ISONCLUST_PROFILE").is_ok();
+    macro_rules! timed {
+        ($field:ident, $body:expr) => {{
+            if profiling {
+                let t = std::time::Instant::now();
+                let v = $body;
+                times.$field += t.elapsed();
+                v
+            } else {
+                $body
+            }
+        }};
+    }
 
     for r in sorted_reads {
         let read_cl_id = r.id;
@@ -228,7 +300,7 @@ pub fn reads_to_clusters(
             skipped_short += 1;
             continue;
         }
-        let ms = minimizers::get_kmer_minimizers(&hpol, p.k, p.w);
+        let ms = timed!(minimizers, minimizers::get_kmer_minimizers(&hpol, p.k, p.w));
 
         // 2. the compressed error rate, unless a previous pass already did it
         {
@@ -239,25 +311,28 @@ pub fn reads_to_clusters(
                 info.batch_index = new_batch_index;
             } else {
                 info.batch_index = new_batch_index;
-                info.error_rate = compressed_error_rate(&r.seq, &r.qual);
+                info.error_rate = timed!(error_rate, compressed_error_rate(&r.seq, &r.qual));
             }
         }
 
         // 3. hits
-        let hits = cluster::get_all_hits(&ms, &db, read_cl_id);
+        let hits = timed!(hits, cluster::get_all_hits(&ms, &db, read_cl_id));
 
         // 4. map
-        let m = cluster::get_best_cluster(
-            read_cl_id,
-            hpol.len(),
-            &hits,
-            ms.len(),
-            &RepMap(&reps),
-            table,
-            p.min_shared,
-            p.min_fraction,
-            p.min_prob_no_hits,
-            p.mapped_threshold,
+        let m = timed!(
+            mapping,
+            cluster::get_best_cluster(
+                read_cl_id,
+                hpol.len(),
+                &hits,
+                ms.len(),
+                &RepMap(&reps),
+                table,
+                p.min_shared,
+                p.min_fraction,
+                p.min_prob_no_hits,
+                p.mapped_threshold,
+            )
         );
         if m.best_cluster_id >= 0 {
             out_mapped += 1;
@@ -266,12 +341,15 @@ pub fn reads_to_clusters(
         // 5. align
         let a_id = if m.best_cluster_id < 0 && (m.nr_shared_kmers as i64) >= p.min_shared {
             out_aln_called += 1;
-            let a = blockalign::get_best_cluster_block_align(
-                read_cl_id,
-                &hits,
-                &RepSeqs(&reps),
-                p.k,
-                p.aligned_threshold,
+            let a = timed!(
+                alignment,
+                blockalign::get_best_cluster_block_align(
+                    read_cl_id,
+                    &hits,
+                    &RepSeqs(&reps),
+                    p.k,
+                    p.aligned_threshold,
+                )
             );
             if a.best_cluster_id >= 0 {
                 out_aln_passed += 1;
@@ -286,9 +364,11 @@ pub fn reads_to_clusters(
         if best >= 0 {
             assignment.push((read_cl_id, best as usize));
         } else {
-            for (mn, _) in &ms {
-                db.add(mn, read_cl_id);
-            }
+            timed!(db_insert, {
+                for (mn, _) in &ms {
+                    db.add(mn, read_cl_id);
+                }
+            });
         }
     }
 
@@ -322,6 +402,7 @@ pub fn reads_to_clusters(
         aln_passed: out_aln_passed,
         aln_called: out_aln_called,
         skipped_short,
+        times,
     }
 }
 

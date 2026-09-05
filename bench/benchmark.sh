@@ -54,6 +54,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# The preset a corpus needs: --ont (k13 w20) or --isoseq (k15 w50) for
+# isONclust1, and the matching --mode for isONclust3. Running PacBio CCS reads
+# with ONT parameters benchmarks a configuration nobody uses.
+corpus_preset() {
+  local p
+  p="$(awk -F'\t' -v n="$1" '$1==n {print $4; exit}' bench/corpora.tsv 2>/dev/null)"
+  echo "${p:-ont}"
+}
+
 resolve_corpus() {
   local c="$1" p
   [[ -f "$c" ]] && { echo "$c"; return; }
@@ -88,9 +97,9 @@ import sys
 v=sorted(float(x) for x in sys.argv[1:])
 print(f'{v[len(v)//2]:.2f}')" "$@"; }
 
-printf '%-16s %-11s %-4s %8s %8s %7s %7s %7s %7s %7s\n' \
-  CORPUS TOOL -t "SECS" "PEAK_MB" "CLUST" "HOMOG" "COMPL" "V" "ARI"
-printf '%.0s-' {1..96}; echo
+printf '%-16s %-7s %-11s %-4s %8s %8s %7s %7s %7s %7s %7s\n' \
+  CORPUS PRESET TOOL -t "SECS" "PEAK_MB" "CLUST" "HOMOG" "COMPL" "V" "ARI"
+printf '%.0s-' {1..104}; echo
 
 for corpus in $CORPORA; do
   fq="$(resolve_corpus "$corpus")"
@@ -99,6 +108,11 @@ for corpus in $CORPORA; do
     continue
   fi
   ref_clusters=""
+  preset="$(corpus_preset "$corpus")"
+  case "$preset" in
+    isoseq) i1_preset="--isoseq"; i3_mode="pacbio" ;;
+    *)      i1_preset="--ont";    i3_mode="ont" ;;
+  esac
 
   for t in $THREADS; do
     for tool in python port isONclust3; do
@@ -110,11 +124,11 @@ for corpus in $CORPORA; do
         d="$WORK/$corpus.$tool.$t.$rep"; rm -rf "$d"; mkdir -p "$d"
         case "$tool" in
           python)
-            run_timed env PYTHONHASHSEED=0 "$REF_PYTHON" isONclust --ont --t "$t" \
+            run_timed env PYTHONHASHSEED=0 "$REF_PYTHON" isONclust "$i1_preset" --t "$t" \
               --fastq "$fq" --outfolder "$d"
             out="$d/final_clusters.tsv" ;;
           port)
-            run_timed "$PORT_BIN" --ont --t "$t" --fastq "$fq" --outfolder "$d"
+            run_timed "$PORT_BIN" "$i1_preset" --t "$t" --fastq "$fq" --outfolder "$d"
             out="$d/final_clusters.tsv" ;;
           isONclust3)
             # --post-cluster is NOT optional for a fair comparison. The README's
@@ -122,7 +136,7 @@ for corpus in $CORPORA; do
             # clustering from 5661 clusters to 66 -- V(gene) 0.36 -> 0.67, and
             # ARI(transcript) 0.53 -> 0.60 -- for 0.09s. Benchmarking without it
             # measures a tool nobody runs.
-            run_timed "$ISONCLUST3" --fastq "$fq" --outfolder "$d" --mode ont \
+            run_timed "$ISONCLUST3" --fastq "$fq" --outfolder "$d" --mode "$i3_mode" \
               --seeding minimizer --post-cluster --no-fastq
             out="$d/clustering/final_clusters.tsv" ;;
         esac
@@ -140,8 +154,8 @@ for corpus in $CORPORA; do
                                     else printf "%7.4f %7.4f %7.4f %7.4f", $7,$8,$9,$10}')"
         fi
       fi
-      printf '%-16s %-11s %-4s %8s %8s %7s %s\n' \
-        "$corpus" "$tool" "$t" "$secs" "$mb" "$nclust" "$scores"
+      printf '%-16s %-7s %-11s %-4s %8s %8s %7s %s\n' \
+        "$corpus" "$preset" "$tool" "$t" "$secs" "$mb" "$nclust" "$scores"
 
       # The port must agree with the reference exactly. A difference here is a
       # port bug, not a result, so say so loudly.
