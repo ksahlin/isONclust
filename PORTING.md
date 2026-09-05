@@ -111,8 +111,10 @@ that wrote it.
 | Python `str(float)` | **done** | `pyfloat.rs`; 39 997 values differentially checked against CPython |
 | phred tables | **done, frozen** | *Finding 12*; 256 entries checked against the reference |
 | `get_kmer_minimizers` | **done** | ~23 million minimizers identical across three corpora and six `(k, w)` settings, including *Finding 4*'s 1687 empty and 152 sub-k minimizers. `bench/dump_reference.py` + `equivalence.sh stage minimizers` |
-| `get_all_hits` | not started | |
-| `get_best_cluster` (the mapping decision) | not started | |
+| `get_all_hits` | **done, unit tests only** | not yet differentially verified — the replay oracle is fed the reference's own hit lists. `reads_to_clusters` is what will exercise it |
+| `get_best_cluster` (the mapping decision) | **done** | ~95 000 recorded decisions identical across three real corpora, 54 000 of them assigning a cluster. Replayed from the live driver |
+| Python `round(x, 2)` | **done** | `pyround.rs`; 100 602 values checked against CPython |
+| empirical probability table | **done, frozen** | 437 KB blob generated from the 2.5 MB Python literal; *Finding 13* |
 | `parasail_block_alignment` + `get_best_cluster_block_align` | not started | |
 | `reads_to_clusters` (the driver) | not started | |
 | output writers, cluster ordering | not started | |
@@ -780,6 +782,56 @@ That last row is the check worth copying: a bug fix in the reference is a behavi
 to be measured against the full matrix on a corpus that reaches it, not just against the case that
 crashed. The port therefore targets the fixed behaviour, and the goldens were re-recorded — which on
 the smoke corpus changed nothing at all.
+
+### Finding 14 — the mapping oracle has two blind spots, and they are worth naming
+
+`equivalence.sh stage mapping` replays ~95 000 recorded `get_best_cluster` calls and they all match.
+Before trusting that, three deliberate errors were introduced. **One was caught and two were not:**
+
+| deliberate error | caught? | why |
+| --- | --- | --- |
+| candidate ranking sorted ascending instead of descending | **yes**, both settings | changes which candidate wins |
+| `reduce(mul, ...)` replaced by `p.powi(n)` | **no** | see below |
+| `mapped_ratio >= threshold` instead of `>` | **no** | see below |
+
+Neither miss is a broken oracle; both are the corpus being unable to distinguish the cases, and the
+measurements say so precisely:
+
+* **The fold and `powi` genuinely differ** — in the last bit, for **27 783 of the 32 400 `(p, n)`
+  combinations this corpus actually reaches** (e.g. `p=0.17140336964776648, n=3` gives
+  `0.005035679329970428` against `0.005035679329970429`). They still produce the same *decisions*,
+  because the value is only ever compared against `min_prob_no_hits`, and one ULP flips that only
+  when it sits exactly on the threshold. That never happened in 95 000 calls.
+* **`>` versus `>=`** is observable only when `mapped_ratio` equals `mapped_threshold` exactly.
+  Across 4098 distinct ratio values on `sirv_real_10k`, **none** was exactly 0.7.
+
+Both are implemented faithfully anyway, because exactness is the specification, and both are pinned
+by unit tests instead. The honest summary is that this oracle checks the *decision* strongly and the
+*arithmetic* weakly — and a green run should not be read as more than that.
+
+A third thing the corpus decides: **both simulated corpora map nothing.** `Passed mapping criteria`
+is **0** for the smoke fixture and 0 for `sirv_sim_err7` — every assignment goes through the
+alignment fallback — against 8144 for `sirv_real_10k`, 12 967 for `sirv_pacbio` and 3950 for
+`droso_20k`. Running this stage on the committed fixture proves nothing at all, so the harness prints
+how many reads were assigned and warns when the answer is zero.
+
+### Finding 13 — fifteen CLI-valid `(k, w)` settings crash on an empty probability table
+
+`p_emp_probs` is built by keeping table rows where `k == args.k` and `abs(w - args.w) <= 2`. The
+table's `w` values step by 5 for each `k`, starting at `k` — so `k=6` has 6, 11, 16, … 96, and
+nothing within ±2 of `w=99` or `w=100`. The dict comes out empty and the first lookup dies:
+
+```
+KeyError: (0.01, 0.01)
+```
+
+Measured: **15 `(k, w)` combinations that pass the CLI's own `k <= w <= 100` validation** reach it,
+including `--k 6 --w 100`, `--k 7 --w 100` and `--k 16 --w 100`. All are at the top of the window
+range, and all are reasonable things to ask for.
+
+Cheap to fix properly — the check belongs beside the existing window validation, where it can say
+which settings are available instead of failing several seconds into a run. In *Deferred
+improvements*; the port reports it rather than raising a `KeyError`.
 
 ### Finding 11 — a fastq without a trailing newline crashes the tool
 

@@ -4,10 +4,13 @@
 //! a valid invocation exits 3 saying so rather than silently producing nothing.
 
 mod cli;
+mod cluster;
 mod fastq;
 mod minimizers;
+mod p_emp;
 mod phred;
 mod pyfloat;
+mod pyround;
 mod sorting;
 mod text;
 
@@ -99,6 +102,14 @@ fn run(args: cli::Args) -> ExitCode {
     // the stage under test is the minimizer selection, not the sort.
     if stage == "minimizers" {
         return dump_minimizers(&args);
+    }
+
+    // `mapping` replays recorded get_best_cluster calls. The sweep is stateful
+    // -- the minimizer database grows as reads become representatives -- so the
+    // reference's calls are captured by wrapping the live driver
+    // (bench/dump_reference.py --stage mapping) and replayed here.
+    if stage == "mapping" {
+        return replay_mapping(&args);
     }
 
     if stage != "sort" {
@@ -242,6 +253,118 @@ fn dump_minimizers(args: &cli::Args) -> ExitCode {
                     let _ = writeln!(out, "{idx}\t{pos}\t{}", String::from_utf8_lossy(m));
                 }
             }
+        }
+    }
+    let _ = out.flush();
+    ExitCode::SUCCESS
+}
+
+/// Replay recorded `get_best_cluster` calls and emit the same `RES` lines.
+///
+/// The dump path comes from `ISONCLUST_MAPPING_DUMP`. Format is
+/// `bench/dump_reference.py --stage mapping`'s: a `CALL` line, one `CAND` line
+/// per candidate in the reference's dict order, then `RES`. Only `RES` is
+/// emitted here, so a diff against the reference's own `RES` lines is the check.
+fn replay_mapping(args: &cli::Args) -> ExitCode {
+    use std::collections::HashMap;
+
+    let path = match std::env::var("ISONCLUST_MAPPING_DUMP") {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("isONclust: ISONCLUST_STAGE=mapping needs ISONCLUST_MAPPING_DUMP=<file>");
+            return ExitCode::from(1);
+        }
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("isONclust: cannot read {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let table = match p_emp::Table::select(args.k, args.w) {
+        Some(t) => t,
+        None => {
+            // Finding 13: the reference builds an empty dict and dies with
+            // KeyError on the first lookup.
+            eprintln!(
+                "isONclust: no empirical probabilities within +-2 of --w {} for --k {}.",
+                args.w, args.k
+            );
+            return ExitCode::from(1);
+        }
+    };
+
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+
+    let mut read_cl_id = 0usize;
+    let mut seq_len = 0usize;
+    let mut n_minimizers = 0usize;
+    let mut hits = cluster::Hits::default();
+    let mut reps: HashMap<usize, cluster::Representative> = HashMap::new();
+
+    let parse_list = |s: &str| -> Vec<usize> {
+        if s.is_empty() {
+            Vec::new()
+        } else {
+            s.split(',')
+                .map(|x| x.parse().expect("integer list"))
+                .collect()
+        }
+    };
+
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        match f.first().copied() {
+            Some("CALL") => {
+                read_cl_id = f[1].parse().expect("read id");
+                seq_len = f[2].parse().expect("seq len");
+                n_minimizers = f[3].parse().expect("minimizer count");
+                let e: f64 = f[4].parse().expect("error rate");
+                hits = cluster::Hits::default();
+                reps.clear();
+                reps.insert(
+                    read_cl_id,
+                    cluster::Representative {
+                        acc: String::new(),
+                        error_rate: e,
+                    },
+                );
+            }
+            Some("CAND") => {
+                let cl_id: usize = f[1].parse().expect("cluster id");
+                let e: f64 = f[2].parse().expect("error rate");
+                let indices = parse_list(f[3]);
+                let positions = parse_list(f[4]);
+                let acc = f.get(5).copied().unwrap_or("").to_string();
+                hits.order.push(cl_id);
+                hits.by_cluster
+                    .insert(cl_id, cluster::HitList { indices, positions });
+                reps.insert(cl_id, cluster::Representative { acc, error_rate: e });
+            }
+            Some("RES") => {
+                let r = cluster::get_best_cluster(
+                    read_cl_id,
+                    seq_len,
+                    &hits,
+                    n_minimizers,
+                    &reps,
+                    &table,
+                    args.min_shared,
+                    args.min_fraction,
+                    args.min_prob_no_hits,
+                    args.mapped_threshold,
+                );
+                let _ = writeln!(
+                    out,
+                    "RES\t{}\t{}\t{}",
+                    r.best_cluster_id,
+                    r.nr_shared_kmers,
+                    pyfloat::repr(r.mapped_ratio)
+                );
+            }
+            _ => {}
         }
     }
     let _ = out.flush();

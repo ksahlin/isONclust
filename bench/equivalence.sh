@@ -12,6 +12,7 @@
 #   bench/equivalence.sh stable   # recording twice must give identical goldens
 #   bench/equivalence.sh stage sort        # files a ported stage owns, across the matrix
 #   bench/equivalence.sh stage minimizers  # a stage with no file output, via dumps
+#   bench/equivalence.sh stage mapping     # get_best_cluster, replayed from the live driver
 #   bench/equivalence.sh all      # everything
 #
 # Environment:
@@ -539,6 +540,48 @@ cmd_stage_minimizers() {
   done
 }
 
+
+# `get_best_cluster` is stateful -- the minimizer database grows as reads become
+# representatives -- so its calls are captured by wrapping the LIVE driver and
+# replayed here. That is method point 3: an oracle fed only recorded inputs
+# cannot catch a port that follows a different trajectory, but this records what
+# the reference actually did on the way through.
+#
+# NOTE the corpus matters more here than anywhere else. Both simulated corpora
+# decide ZERO reads by mapping -- every assignment goes through the alignment
+# fallback -- so running this on `smoke` proves nothing. The counts are printed
+# so a vacuous pass is visible.
+cmd_stage_mapping() {
+  local settings=("13 20" "15 50")
+  local d="$WORK/mp"
+  rm -rf "$d"; mkdir -p "$d"
+  PYTHONHASHSEED=0 $REF_PYTHON isONclust --k 15 --w 50 --t 1 \
+    --fastq "$CORPUS" --outfolder "$d" >/dev/null 2>&1 || true
+  if [[ ! -s "$d/sorted.fastq" ]]; then
+    bad "could not produce a sorted.fastq from $CORPUS"
+    return
+  fi
+  local kw k w calls assigned
+  for kw in "${settings[@]}"; do
+    k="${kw% *}"; w="${kw#* }"
+    $REF_PYTHON bench/dump_reference.py --stage mapping \
+      --sorted-fastq "$d/sorted.fastq" --k "$k" --w "$w" > "$d/dump.tsv" 2>/dev/null
+    grep '^RES' "$d/dump.tsv" > "$d/ref.tsv" || true
+    ISONCLUST_MAPPING_DUMP="$d/dump.tsv" ISONCLUST_STAGE=mapping "$PORT_BIN" \
+      --k "$k" --w "$w" --fastq "$d/sorted.fastq" --outfolder "$d/o" \
+      > "$d/port.tsv" 2>/dev/null
+    calls=$(wc -l < "$d/ref.tsv" | tr -d ' ')
+    assigned=$(awk -F'\t' '$2>=0' "$d/ref.tsv" | wc -l | tr -d ' ')
+    if cmp -s "$d/ref.tsv" "$d/port.tsv"; then
+      ok "k=$k w=$w: $calls decisions identical ($assigned assigned a cluster)"
+      [[ "$assigned" == "0" ]] && info "  WARNING: no read mapped -- this corpus does not exercise the stage"
+    else
+      bad "k=$k w=$w: $(diff "$d/ref.tsv" "$d/port.tsv" | grep -c '^<') of $calls decisions differ"
+      diff "$d/ref.tsv" "$d/port.tsv" | head -6 | sed 's/^/          /' || true
+    fi
+  done
+}
+
 cmd_stage() {
   local which="${1:-sort}"
   echo "==> stage '$which': the files this stage owns, across the case matrix"
@@ -548,6 +591,7 @@ cmd_stage() {
     return
   fi
   if [[ "$which" == "minimizers" ]]; then cmd_stage_minimizers; return; fi
+  if [[ "$which" == "mapping" ]]; then cmd_stage_mapping; return; fi
   local files
   case "$which" in
     sort) files="sorted.fastq logfile.txt" ;;
@@ -593,8 +637,8 @@ case "${1:-all}" in
   dropped) cmd_dropped ;;
   stable)  cmd_stable ;;
   stage)   cmd_stage "${2:-sort}" ;;
-  all)     cmd_env; cmd_seeds; cmd_cli record; cmd_record; cmd_stable; cmd_stage sort; cmd_stage minimizers; cmd_verify; cmd_dropped ;;
-  *) echo "usage: $0 {env|seeds|cli [record|verify]|record|verify|dropped|stable|stage [sort|minimizers]|all}" >&2; exit 2 ;;
+  all)     cmd_env; cmd_seeds; cmd_cli record; cmd_record; cmd_stable; cmd_stage sort; cmd_stage minimizers; cmd_stage mapping; cmd_verify; cmd_dropped ;;
+  *) echo "usage: $0 {env|seeds|cli [record|verify]|record|verify|dropped|stable|stage [sort|minimizers|mapping]|all}" >&2; exit 2 ;;
 esac
 
 echo
