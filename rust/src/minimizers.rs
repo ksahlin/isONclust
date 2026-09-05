@@ -86,13 +86,15 @@ pub fn get_kmer_minimizers(seq: &[u8], k: usize, w_size: usize) -> Vec<(&[u8], u
     minimizers
 }
 
+/// A read's homopolymer-compressed sequence, and each minimizer as a
+/// `(position, length)` span into it. Spans rather than borrowed slices so the
+/// compressed sequence can be returned alongside them without a self-referential
+/// borrow.
+pub type ReadMinimizers = (Vec<u8>, Vec<(usize, usize)>);
+
 /// Homopolymer-compress, then take minimizers -- what `reads_to_clusters` does.
 /// Returns `None` for a read the reference skips.
-pub fn minimizers_for_read(
-    seq: &[u8],
-    k: usize,
-    w: usize,
-) -> Option<(Vec<u8>, Vec<(usize, usize)>)> {
+pub fn minimizers_for_read(seq: &[u8], k: usize, w: usize) -> Option<ReadMinimizers> {
     let hpol = crate::sorting::homopolymer_compress(seq);
     if hpol.len() < k {
         return None;
