@@ -683,6 +683,56 @@ accurate*, on both platforms — ONT V 0.7858 against 0.7285, PacBio 0.8189 agai
 in both. The hierarchical batch-and-merge is doing something useful rather than approximating the
 single pass.
 
+### The downstream check: does a better clustering give better transcripts?
+
+Every metric above is intrinsic — it scores a clustering against a truth set. This scores what the
+clustering is *for*. `bench/downstream.sh` runs the real pipeline and hands the result to isONform's
+own scorer.
+
+**On PacBio the pipeline is `isONclust -> isONform` directly**; ONT needs isONcorrect in between,
+which is why this runs on PacBio — one fewer heavy stage, and the platform where the intrinsic
+metrics separate the two clusterers most clearly. The port and the reference produce byte-identical
+clusterings, so the downstream is run **twice**, not three times: running the port separately would
+measure nothing.
+
+`sirv_pacbio`, 17 633 reads, clusters of ≥3 reads, scored against the 68-transcript SIRV reference:
+
+| | isoforms | matching | recall | precision | F1 | identity |
+| --- | --- | --- | --- | --- | --- | --- |
+| **isONclust1** | 70 | 35 | **47.1%** | **50.0%** | **0.485** | 0.9913 |
+| isONclust3 | 61 | 27 | 38.2% | 44.3% | 0.410 | 0.9893 |
+
+**isONclust1's clustering recovers 32 of the 68 reference transcripts; isONclust3's recovers 26.**
+It wins on recall, precision and F1 together, so this is not a threshold artefact — and the lenient
+band (identity ≥0.90, length within 20%) gives the same ordering.
+
+This agrees with the intrinsic PacBio metrics rather than contradicting them, which is worth saying:
+the gene-level V-measure said isONclust1 (0.8132 against 0.6492), and the transcripts agree.
+
+### And the whole-pipeline runtime inverts the clustering runtime
+
+| stage | isONclust1 | isONclust3 |
+| --- | --- | --- |
+| clustering (`--t 8`) | 7.0 s (reference) / 37.0 s (port) | **1.7 s** |
+| clusters handed downstream | 49, largest **3334** reads | 27, largest **8237** reads |
+| isONform | **386 s** | **2053 s** |
+| **total, reads to isoforms** | **~393 s** (reference) | **~2055 s** |
+
+**isONclust3 saves about 5 seconds of clustering and costs about 1670 seconds downstream.** Its
+14x clustering speedup is wiped out more than 300 times over, because isONform's cost grows steeply
+with cluster size and isONclust3 hands it a single 8237-read cluster where isONclust1's largest is
+3334.
+
+That 8237-read cluster is the same defect the intrinsic metrics found from the other side: on PacBio
+isONclust3's gene-level homogeneity is 0.6482, meaning its clusters mix genes. Merging genes both
+loses transcripts and makes the downstream quadratically more expensive.
+
+**The lesson for this port is a methodological one.** Clustering speed measured alone is close to
+meaningless for a tool that sits at the front of a pipeline: the thing downstream of it is 50–1000x
+more expensive, and cluster *shape* dominates its cost. A future comparison — including any
+evaluation of the port's own optimisations — should report end-to-end pipeline time, not just the
+clustering stage.
+
 ## Findings in the reference## Findings in the reference
 
 Everything here was measured in the pinned environment, not inferred from reading. Each finding names
@@ -1381,6 +1431,34 @@ And the accuracy cost of either is not small. 82% verdict agreement on `droso_20
 **1 850 of its 10 309 alignment-decided reads would land in a different cluster**. That is not a
 tie-breaking difference; it is a different tool. WFA2's 57% on `sirv_real_10k` is barely better than
 a coin flip on a binary decision.
+
+### Is there a Rust-native aligner that could do this? Surveyed, and no
+
+The requirement is narrow: **affine gaps, semi-global with free end gaps, and a positive match
+reward**. That last part rules out most of the fast options, because they compute edit *distance*.
+
+Timed on the same 2000 real `droso_20k` alignments:
+
+| aligner | secs | vs parasail C | can express the scoring? |
+| --- | --- | --- | --- |
+| **parasail C library** | **2.89** | **1.0x** | yes — it is the reference |
+| our exact scalar port | 38.67 | 13.4x slower | yes |
+| rust-bio `Aligner::custom` | 56.42 | **19.5x slower** | yes, but scalar Gotoh |
+| block-aligner | ~12 (scaled) | ~4x slower | yes, approximately |
+| edlib (`edlib_rs`) | — | — | **no** — unit-cost, no match reward |
+| triple_accel | — | — | **no** — edit distance, no match reward |
+
+* **rust-bio is slower than our own scalar implementation**, by 1.5x. It is a general-purpose Gotoh
+  with clipping; there is no SIMD path. It would also not match parasail's tie-breaking, so adopting
+  it would cost both speed and exactness.
+* **edlib and triple_accel cannot express the problem at all.** They are unit-cost edit-distance
+  engines: there is no `match_score = 2`, so the optimum they find is a different optimum. Their
+  speed is irrelevant.
+* **block-aligner is the only competitive Rust-native option**, and it is still ~4x slower than
+  parasail's C library while changing 1–22% of clustering verdicts.
+
+So the answer to "is there a Rust-native alternative" is **no, not for this scoring**. The pure-Rust
+constraint costs roughly an order of magnitude here, and no crate closes it.
 
 **So the recommendation is to link parasail rather than approximate it.** `libparasail.dylib` is
 already on any machine that can run the reference — the `parasail` Python package bundles it — so
