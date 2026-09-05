@@ -946,9 +946,15 @@ All three are now guarded:
 | `equivalence.sh dropped` | demonstrated against three stand-ins: refuses-and-names passes, accepts-and-ignores fails, refuses-vaguely fails |
 | `equivalence.sh seeds` | demonstrated to fail on Python 3.11 |
 
-**A failing case aborted the whole run.** `cli_case` ended with a diff whose non-zero status became
-the function's return value, and under `set -e` that killed the script. The first CLI verify reported
-one failure out of 28 cases; the other 27 had not run. Fixed with an explicit `return 0`.
+**A failing case aborted the whole run, twice.** `cli_case` ended with a diff whose non-zero status
+became the function's return value, and under `set -e` that killed the script: the first CLI verify
+reported one failure out of 28 cases and the other 27 had never run. The same shape came back in the
+dump-based stage helpers, where a trailing `[[ ... ]] && info ...` left status 1 whenever the
+condition was false — so a *passing* mapping run printed its results and then exited before the
+`==> N passed` summary, with a non-zero status. Both fixed with an explicit `return 0`.
+
+This is the single most recurrent mistake in the harness, and it fails in the most misleading
+direction available: the run looks like it stopped because something went wrong.
 
 Four harness bugs, every one of them reporting something other than the truth — three reported
 passes, the fourth reported a single failure and hid 27 unrun cases. The gates below exist because of

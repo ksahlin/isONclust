@@ -538,6 +538,9 @@ cmd_stage_minimizers() {
       diff "$d/ref.tsv" "$d/port.tsv" | head -6 | sed 's/^/          /' || true
     fi
   done
+  # See cli_case: without this the last command's status becomes the function's
+  # and `set -e` aborts before the summary line. Third time this shape has bitten.
+  return 0
 }
 
 
@@ -580,18 +583,32 @@ cmd_stage_mapping() {
       diff "$d/ref.tsv" "$d/port.tsv" | head -6 | sed 's/^/          /' || true
     fi
   done
+  # See cli_case: without this the last command's status becomes the function's
+  # and `set -e` aborts before the summary line. Third time this shape has bitten.
+  return 0
 }
 
 cmd_stage() {
   local which="${1:-sort}"
+  if [[ ! -x "$PORT_BIN" ]]; then
+    echo "==> stage '$which'"
+    bad "no port binary at $PORT_BIN"
+    return 0
+  fi
+  # The dump-based stages sweep their own (k, w) settings rather than the case
+  # matrix, so they get their own header and skip check_cases.
+  if [[ "$which" == "minimizers" ]]; then
+    echo "==> stage 'minimizers': (minimizer, position) lists, via dumps"
+    cmd_stage_minimizers
+    return 0
+  fi
+  if [[ "$which" == "mapping" ]]; then
+    echo "==> stage 'mapping': get_best_cluster decisions, replayed from the live driver"
+    cmd_stage_mapping
+    return 0
+  fi
   echo "==> stage '$which': the files this stage owns, across the case matrix"
   check_cases
-  if [[ ! -x "$PORT_BIN" ]]; then
-    bad "no port binary at $PORT_BIN"
-    return
-  fi
-  if [[ "$which" == "minimizers" ]]; then cmd_stage_minimizers; return; fi
-  if [[ "$which" == "mapping" ]]; then cmd_stage_mapping; return; fi
   local files
   case "$which" in
     sort) files="sorted.fastq logfile.txt" ;;
