@@ -119,7 +119,7 @@ that wrote it.
 | `get_best_cluster_block_align` | **done** | covered end to end |
 | `reads_to_clusters` (the driver) | **done** | **21 of 27 output cases byte-identical end to end**; the 6 failures are all `--t > 1` |
 | output writers, cluster ordering | **done** | all four output files byte-identical on smoke, `sirv_real_10k`, `sirv_pacbio` and `droso_20k` |
-| `parallelize.parallel_clustering` (`--t > 1`) | **not started — the only remaining gap** | semantic, not a speed knob; *Finding 3*. Accounts for all 6 failing cases |
+| `parallelize.parallel_clustering` (`--t > 1`) | **done** | **all 27 output cases pass.** Verified on real corpora at `--t 4` and `--t 8`, including the per-iteration intermediate files |
 | `write_fastq` | **done** | 3 cases, 76/22/12 files each, byte-identical |
 | `--consensus` (spoa + RC detection) | **dropped — will not be implemented** | *Scope*. `equivalence.sh dropped` asserts non-zero exit and the flag named |
 | `--ccs`/`--flnc` (BAM input) | not started | needs a BAM reader; *Scope* |
@@ -525,11 +525,27 @@ reference exactly:
 
 21 of 27 equivalence cases pass; the 6 that do not are all `--t > 1`, which is not ported.
 
-**The port is currently slower than the reference wherever alignment dominates**, exactly as the
-aligner measurements predicted: parity on `sirv_real_10k` (8144 of its reads are decided by mapping,
-only 1806 by alignment), 2.2x slower on `droso_20k` (10 309 alignments) and 3.7x slower on
-`sirv_pacbio` (5485 alignments on long CCS reads). The 12–15x won on the sorting stage does not pay
-for a 15x-slower exact aligner.
+**The port is currently slower than the reference**, for two separate and separately-fixable reasons:
+
+| | reference | port | ratio |
+| --- | --- | --- | --- |
+| `sirv_real_10k --t 1` | 4.2 s | 6.2 s | 0.68x |
+| `sirv_real_10k --t 8` | 1.3 s | 2.7 s | 0.47x |
+| `droso_20k --t 1` | 15.2 s | 45.6 s | 0.33x |
+| `droso_20k --t 8` | 7.0 s | 42.1 s | 0.17x |
+
+1. **The exact aligner**, measured at 15x slower than the C library — the dominant cost wherever
+   alignment decides reads, which is most of them on ONT data.
+2. **The port runs batches sequentially.** The reference forks `--t` processes; this port does not
+   thread them yet, which is why `--t 8` barely helps it. `parallelize.rs` explains why threading is
+   behaviour-neutral here — the batches share nothing and `map_async` preserves order — so this is a
+   pure optimisation with no equivalence risk. It is simply not done yet.
+3. A third, smaller cost is self-inflicted: the sweep rebuilds a per-read map of candidate
+   representatives and clones sequences per candidate in the alignment path. Both are gratuitous and
+   neither changes output.
+
+None of the three is a surprise or a mystery, and none requires giving up byte-identity except the
+first.
 
 This is the expected consequence of choosing exactness first and it is not a surprise, but it should
 not be glossed: **a faster aligner is now the single highest-value piece of work**, and it is
@@ -841,6 +857,30 @@ is **0** for the smoke fixture and 0 for `sirv_sim_err7` — every assignment go
 alignment fallback — against 8144 for `sirv_real_10k`, 12 967 for `sirv_pacbio` and 3950 for
 `droso_20k`. Running this stage on the committed fixture proves nothing at all, so the harness prints
 how many reads were assigned and warns when the answer is zero.
+
+### Finding 15 — `--batch_type weighted` is documented and not implemented
+
+The CLI's own help says:
+
+> `In parrallel mode, how to split the reads into chunks "total_nt", "nr_reads", or "weighted"`
+
+`batch_list` implements `nr_reads`, `total_nt` and **`read_lengths_squared`**. There is no
+`weighted` branch, and `read_lengths_squared` is not documented — the two lists overlap in two
+values out of three.
+
+Passing the documented value makes the generator yield nothing, so there are no batches, and the
+reference dies several seconds later with a message about something else entirely:
+
+```
+ValueError: Number of processes must be at least 1
+```
+
+Measured: `total_nt`, `nr_reads` and `read_lengths_squared` all exit 0; `weighted` and any other
+value exit 1 with that error. The port reports the mismatch by name instead, naming the three values
+that work and noting that the help text's third one is not among them.
+
+Fixing this properly is a validation change beside the existing window check, and a docs change: one
+of the two names is wrong and only the author knows which was intended. In *Deferred improvements*.
 
 ### Finding 13 — fifteen CLI-valid `(k, w)` settings crash on an empty probability table
 

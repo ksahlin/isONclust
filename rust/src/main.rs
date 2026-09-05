@@ -10,6 +10,7 @@ mod cluster;
 mod fastq;
 mod minimizers;
 mod p_emp;
+mod parallelize;
 mod parasail;
 mod phred;
 mod pyfloat;
@@ -97,8 +98,8 @@ fn run(args: cli::Args) -> ExitCode {
 
     let stage = std::env::var("ISONCLUST_STAGE").unwrap_or_default();
     // With no stage requested and --t 1, the port now runs end to end.
-    if stage.is_empty() && args.nr_cores == 1 {
-        return run_single_core(&args, &outfolder);
+    if stage.is_empty() {
+        return run_pipeline(&args, &outfolder);
     }
 
     // `minimizers` dumps the same format as `bench/dump_reference.py --stage
@@ -442,7 +443,7 @@ fn replay_parasail() -> ExitCode {
 
 /// Strip the score suffix the sorting stage appended:
 /// `"_".join(acc.split("_")[:-1])`.
-fn strip_score(acc: &str) -> &str {
+pub fn strip_score(acc: &str) -> &str {
     match acc.rfind('_') {
         Some(i) => &acc[..i],
         // The reference's join of an empty list is "", not the original string.
@@ -458,8 +459,8 @@ fn score_of(acc: &str) -> f64 {
         .unwrap_or(f64::NAN)
 }
 
-/// The whole single-core pipeline: sort, sweep, write.
-fn run_single_core(args: &cli::Args, outfolder: &str) -> ExitCode {
+/// The whole pipeline: sort, cluster (single core or batched), write.
+fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
     let k = args.k as usize;
     let table = match p_emp::Table::select(args.k, args.w) {
         Some(t) => t,
@@ -503,29 +504,121 @@ fn run_single_core(args: &cli::Args, outfolder: &str) -> ExitCode {
         })
         .collect();
 
-    let res = sweep::reads_to_clusters(
-        &reads,
+    let params = sweep::SweepParams {
         k,
-        args.w as usize,
-        &table,
-        args.min_shared,
-        args.min_fraction,
-        args.min_prob_no_hits,
-        args.mapped_threshold,
-        args.aligned_threshold,
-    );
+        w: args.w as usize,
+        min_shared: args.min_shared,
+        min_fraction: args.min_fraction,
+        min_prob_no_hits: args.min_prob_no_hits,
+        mapped_threshold: args.mapped_threshold,
+        aligned_threshold: args.aligned_threshold,
+    };
+    let sweep_reads: Vec<sweep::SweepRead> = reads
+        .iter()
+        .enumerate()
+        .map(|(i, r)| sweep::SweepRead {
+            id: i,
+            prev_batch_index: 0,
+            acc: r.acc.clone(),
+            seq: r.seq.as_bytes().to_vec(),
+            qual: r.qual.as_bytes().to_vec(),
+            score: r.score,
+        })
+        .collect();
+
+    let (clusters, representatives, stats) = if args.nr_cores > 1 {
+        // --t > 1 is a DIFFERENT ALGORITHM, not a parallelised one. See
+        // parallelize.rs and PORTING.md Finding 3.
+        let bt = match parallelize::BatchType::parse(&args.batch_type) {
+            Some(b) => b,
+            None => {
+                // Finding 15: the CLI documents "weighted", which no branch
+                // implements; the reference produces no batches and dies with
+                // "ValueError: Number of processes must be at least 1".
+                eprintln!(
+                    "isONclust: --batch_type {:?} is not implemented.",
+                    args.batch_type
+                );
+                eprintln!("Use total_nt, nr_reads or read_lengths_squared. Note the help text's");
+                eprintln!("\"weighted\" is not implemented in the reference either.");
+                return ExitCode::from(1);
+            }
+        };
+        let r = parallelize::parallel_clustering(
+            &sweep_reads,
+            args.nr_cores as usize,
+            bt,
+            &table,
+            params,
+        );
+        // The per-iteration files parallel mode writes.
+        for (i, (pre, origins)) in r.intermediates.iter().enumerate() {
+            let dir = std::path::Path::new(outfolder).join((i + 1).to_string());
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                eprintln!("isONclust: cannot create {}: {e}", dir.display());
+                return ExitCode::from(1);
+            }
+            if let Err(e) = std::fs::write(dir.join("pre_clusters.csv"), pre)
+                .and_then(|_| std::fs::write(dir.join("cluster_origins.csv"), origins))
+            {
+                eprintln!("isONclust: cannot write intermediates: {e}");
+                return ExitCode::from(1);
+            }
+        }
+        (
+            r.clusters,
+            r.representatives,
+            (r.mapped_passed, r.aln_passed, r.aln_called, r.skipped_short),
+        )
+    } else {
+        let mut clusters = sweep::OrderedClusters::default();
+        let mut reps: std::collections::HashMap<usize, sweep::ReadInfo> =
+            std::collections::HashMap::new();
+        for x in &sweep_reads {
+            clusters.insert(x.id, vec![x.acc.clone()]);
+            reps.insert(
+                x.id,
+                sweep::ReadInfo {
+                    id: x.id,
+                    batch_index: x.prev_batch_index,
+                    acc: x.acc.clone(),
+                    seq: x.seq.clone(),
+                    qual: x.qual.clone(),
+                    score: x.score,
+                    error_rate: None,
+                },
+            );
+        }
+        let res = sweep::reads_to_clusters(
+            clusters,
+            reps,
+            &sweep_reads,
+            cluster::MinimizerDatabase::new(),
+            1,
+            &table,
+            params,
+        );
+        (
+            res.clusters,
+            res.representatives,
+            (
+                res.mapped_passed,
+                res.aln_passed,
+                res.aln_called,
+                res.skipped_short,
+            ),
+        )
+    };
 
     // --- write output, ordered by (cluster size, representative score) desc ---
     //
     // `sorted(..., reverse=True)` is stable and does NOT reverse ties, so equal
     // (size, score) pairs keep dict insertion order -- which after the
     // reassignment step is ascending cluster id. Hence the third key.
-    let mut order: Vec<usize> = res.clusters.iter().map(|(i, _)| *i).collect();
-    let by_id: std::collections::HashMap<usize, &Vec<String>> =
-        res.clusters.iter().map(|(i, v)| (*i, v)).collect();
+    let mut order: Vec<usize> = clusters.order.clone();
     order.sort_by(|a, b| {
-        let ka = (by_id[a].len(), res.representatives[a].score);
-        let kb = (by_id[b].len(), res.representatives[b].score);
+        let ka = (clusters.map[a].len(), representatives[a].score);
+        let kb = (clusters.map[b].len(), representatives[b].score);
         kb.0.cmp(&ka.0)
             .then(kb.1.partial_cmp(&ka.1).expect("scores are finite"))
             .then(a.cmp(b))
@@ -535,7 +628,7 @@ fn run_single_core(args: &cli::Args, outfolder: &str) -> ExitCode {
     let mut origins_out = String::new();
     let mut nontrivial = 0usize;
     for (output_cl_id, c_id) in order.iter().enumerate() {
-        let rep = &res.representatives[c_id];
+        let rep = &representatives[c_id];
         origins_out.push_str(&format!(
             "{}\t{}\t{}\t{}\t{}\t{}\n",
             output_cl_id,
@@ -543,11 +636,9 @@ fn run_single_core(args: &cli::Args, outfolder: &str) -> ExitCode {
             String::from_utf8_lossy(&rep.seq),
             String::from_utf8_lossy(&rep.qual),
             pyfloat::repr(rep.score),
-            pyfloat::repr(rep.error_rate),
+            pyfloat::repr(rep.error_rate.unwrap_or(f64::NAN)),
         ));
-        let mut members: Vec<&String> = by_id[c_id].iter().collect();
-        // sorted(all_read_acc, key=float(...), reverse=True) -- stable, so ties
-        // keep the order they were added in.
+        let mut members: Vec<&String> = clusters.map[c_id].iter().collect();
         members.sort_by(|a, b| {
             score_of(b)
                 .partial_cmp(&score_of(a))
@@ -556,7 +647,7 @@ fn run_single_core(args: &cli::Args, outfolder: &str) -> ExitCode {
         for acc in &members {
             clusters_out.push_str(&format!("{}\t{}\n", output_cl_id, strip_score(acc)));
         }
-        if by_id[c_id].len() > 1 {
+        if clusters.map[c_id].len() > 1 {
             nontrivial += 1;
         }
     }
@@ -568,17 +659,20 @@ fn run_single_core(args: &cli::Args, outfolder: &str) -> ExitCode {
         eprintln!("isONclust: cannot write output: {e}");
         return ExitCode::from(1);
     }
+    let (mapped_passed, aln_passed, aln_called, skipped_short) = stats;
 
     println!("Total number of reads iterated through:{}", reads.len());
-    println!("Passed mapping criteria:{}", res.mapped_passed);
-    println!(
-        "Passed alignment criteria in this process:{}",
-        res.aln_passed
-    );
+    println!("Passed mapping criteria:{}", mapped_passed);
+    println!("Passed alignment criteria in this process:{}", aln_passed);
     println!(
         "Total calls to alignment mudule in this process:{}",
-        res.aln_called
+        aln_called
     );
+    if skipped_short > 0 {
+        // The reference prints one line per skipped read; a count says the same
+        // thing without burying the summary. stdout is not in the contract.
+        println!("skipped {skipped_short} reads whose homopolymer-compressed length was under k");
+    }
     println!("Nr clusters larger than 1: {}", nontrivial);
     println!("Nr clusters (all): {}", order.len());
     ExitCode::SUCCESS
