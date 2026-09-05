@@ -1189,8 +1189,13 @@ want more.
    ONT reads. Keep both. *Finding 9* is now fixed in the Python.
 9. **Port the CLI**, locked by unit tests and the 14 differential cases. Nine multi-word flags need
    explicit `long = "..."`; five are double-dash single-letter; argparse prefix abbreviation is live.
-10. **Write `bench/dump_reference.py`** and work outward from the leaves: `readfq`, the quality
-    scoring and score sort, then `get_kmer_minimizers` — where a stage oracle is not optional.
+10. ~~Work outward from the leaves: `readfq`, the quality scoring and the score sort.~~ **Done.**
+    `sorted.fastq` and `logfile.txt` are byte-identical across 24 cases on three corpora and on ten
+    configurations spanning ~257 000 reads, and the stage is 12–15x faster (droso_100k: 7.90 s →
+    0.51 s). Verified with `bench/equivalence.sh stage sort` rather than a dump/replay oracle: this
+    stage's output *is* a file the tool writes, so diffing it directly is simpler and stronger.
+    **`get_kmer_minimizers` is next and does need `bench/dump_reference.py`**, because its output
+    never reaches a file — and *Finding 5* is the argument that end-to-end goldens cannot see it.
 11. **CI on Linux and macOS, x86_64 and arm64, on day one.** Method point 7. `.travis.yml` is dead
     (Travis, Python 3.4–3.6) and should be replaced, not migrated. Note the entry point is `isONclust`
     with three capitals — the exact trap that broke isONform's CI on its first ext4 filesystem.
