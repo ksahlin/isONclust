@@ -21,9 +21,18 @@
 # idea with minimap2 and no pysam dependency.
 #
 # LEVEL
-#   gene       SIRV101 -> SIRV1     the tool's stated target ("each cluster
-#                                   represents all reads that came from a gene")
-#   transcript SIRV101 -> SIRV101   finer, and not what the tool aims at
+#   gene       SIRV101 -> SIRV1     THE TARGET. isONclust is a gene clustering
+#                                   tool -- "each cluster represents all reads
+#                                   that came from a gene" -- so this is the
+#                                   level any result should be judged at, and it
+#                                   is the default.
+#   transcript SIRV101 -> SIRV101   DIAGNOSTIC ONLY. Useful for understanding the
+#                                   shape of a clustering; never a thing to
+#                                   optimise. It disagrees with the gene-level
+#                                   verdict on ONT and agrees on PacBio, so
+#                                   steering by it would mean steering by a
+#                                   number that changes its mind per platform.
+#                                   See PORTING.md, "Accuracy".
 set -euo pipefail
 
 READS="${1:?reads fastq}"

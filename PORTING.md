@@ -639,49 +639,68 @@ stage timers (`ISONCLUST_PROFILE=1`) can:
 only 1806 of 9972 reads are *decided* by alignment — each alignment costs milliseconds while
 everything else costs microseconds, so a path taken by 18% of reads consumes 98% of the time.
 
-### Accuracy, and why the verdict depends on both the truth level and the platform
+### Accuracy
 
-Truth from `minimap2` against the SIRV transcriptome, scored at gene level (what isONclust says it
-targets: "each cluster represents all reads that came from a gene") and at transcript level.
+**isONclust is a gene clustering tool, and gene-level accuracy is the metric.** The README opens with
+it — "clusters, where each cluster represents all reads that came from a gene" — and the paper's
+abstract calls the problem "clustering long reads according to their gene family of origin".
+Everything below is scored against genes unless it says otherwise.
 
-**SIRV ONT, 9998 reads:**
+Transcript-level numbers are reported too, but as a **diagnostic, not a target**. They say something
+about the *shape* of a clustering — whether a tool is splitting near transcript boundaries — and that
+is occasionally useful for understanding a result. **Nothing should ever be tuned to improve them.**
+A change that raised transcript-level V at the cost of gene-level V would be a regression however
+good it looked, and the section below shows why that is not a hypothetical risk.
 
-| truth | tool | clusters | homogeneity | completeness | V | ARI |
+Truth from `minimap2` against the SIRV transcriptome. 9998 ONT reads, 14 783 PacBio reads.
+
+#### Gene level — the result
+
+| platform | tool | clusters | homogeneity | completeness | V | ARI |
 | --- | --- | --- | --- | --- | --- | --- |
-| gene (7) | isONclust1 `--t 1` | 36 | 1.0000 | 0.5729 | **0.7285** | 0.5681 |
-| | isONclust1 `--t 8` | 30 | 1.0000 | 0.6472 | **0.7858** | **0.7338** |
+| ONT | **isONclust1 `--t 1`** | 36 | 1.0000 | 0.5729 | **0.7285** | **0.5681** |
+| | **isONclust1 `--t 8`** | 30 | 1.0000 | 0.6472 | **0.7858** | **0.7338** |
 | | isONclust3 | 66 | 1.0000 | 0.5005 | 0.6671 | 0.3119 |
-| transcript (68) | isONclust1 `--t 1` | 36 | 0.6479 | 0.9167 | 0.7592 | 0.3014 |
-| | isONclust3 | 66 | 0.7441 | 0.9197 | **0.8226** | **0.6025** |
-
-**SIRV PacBio, 14 783 reads:**
-
-| truth | tool | clusters | homogeneity | completeness | V | ARI |
-| --- | --- | --- | --- | --- | --- | --- |
-| gene (7) | isONclust1 `--t 1` | 151 | 1.0000 | 0.6853 | **0.8132** | **0.7138** |
-| | isONclust1 `--t 8` | 110 | 1.0000 | 0.6933 | **0.8189** | **0.7259** |
+| PacBio | **isONclust1 `--t 1`** | 151 | 1.0000 | 0.6853 | **0.8132** | **0.7138** |
+| | **isONclust1 `--t 8`** | 110 | 1.0000 | 0.6933 | **0.8189** | **0.7259** |
 | | isONclust3 | 163 | 0.6482 | 0.6503 | 0.6492 | 0.3578 |
-| transcript (66) | isONclust1 `--t 1` | 151 | 0.6505 | 0.9708 | **0.7790** | **0.3733** |
+
+**isONclust1 wins on both platforms, on every gene-level metric.** The margin is wider on PacBio
+(V 0.813 against 0.649) than on ONT (0.729 against 0.667), and wider still on ARI. Its homogeneity is
+a perfect 1.0000 in five of six rows — its clusters never mix genes; what it loses is completeness,
+by splitting a gene across several clusters. isONclust3 on PacBio is the one case where homogeneity
+breaks down (0.6482), meaning clusters that genuinely mix genes.
+
+The downstream isoform check below agrees with this ordering, which is the confirmation that matters:
+the intrinsic metric and the thing the tool is *for* point the same way.
+
+#### Transcript level — diagnostic only
+
+| platform | tool | clusters | homogeneity | completeness | V | ARI |
+| --- | --- | --- | --- | --- | --- | --- |
+| ONT | isONclust1 `--t 1` | 36 | 0.6479 | 0.9167 | 0.7592 | 0.3014 |
+| | isONclust3 | 66 | 0.7441 | 0.9197 | 0.8226 | 0.6025 |
+| PacBio | isONclust1 `--t 1` | 151 | 0.6505 | 0.9708 | 0.7790 | 0.3733 |
 | | isONclust3 | 163 | 0.4459 | 0.9744 | 0.6119 | 0.1175 |
 
-**Adding PacBio changed the conclusion.** On ONT the two tools split — isONclust1 wins at gene level,
-isONclust3 at transcript level — and it would have been easy to write that up as "they target
-different granularities, pick by what you need". On PacBio isONclust1 wins at **both** levels, and
-not narrowly: V 0.78 against 0.61 and ARI 0.37 against 0.12 at transcript level, where isONclust3
-had been ahead on ONT. Its homogeneity in particular collapses (0.4459), meaning its clusters mix
-transcripts, which is the opposite of its ONT behaviour.
+**This is exactly why it must not be optimised for.** On ONT it says isONclust3 (V 0.823 against
+0.759, ARI 0.603 against 0.301) — the opposite of the gene-level answer, and the opposite of what the
+downstream transcripts say. On PacBio it reverses and says isONclust1. A metric that flips its verdict
+between platforms while the target metric stays stable is not measuring the thing being optimised.
 
-A single-platform comparison would have been misleading in a way no amount of care within that
-platform could have caught. This is the "three corpora, because one lies" rule with *platform* as the
-axis rather than depth.
+Read as a diagnostic rather than a score, it is informative: isONclust1 sits between the two
+granularities on both platforms (36 clusters for 7 genes and 68 transcripts on ONT), and isONclust3
+tracks transcripts on ONT and neither on PacBio.
+
+**Note what did *not* happen here.** Under the correct framing the conclusion was stable across both
+platforms — isONclust1 wins, on every metric, on both. It was only the secondary metric that flipped,
+and had that been the headline the PacBio corpus would have looked like it "changed the conclusion".
+It changed nothing; it exposed that the secondary metric was never a conclusion. That is a stronger
+version of "three corpora, because one lies": a second platform is worth having even when it agrees,
+because it shows which of your numbers are load-bearing.
 
 **The port reproduces the reference exactly at every setting**, so it has no accuracy row of its own;
 `benchmark.sh` diffs the two clusterings and reports a difference as a bug, not a result.
-
-**Still unexplained and worth following up:** `--t 8` is not just faster than `--t 1` but *more
-accurate*, on both platforms — ONT V 0.7858 against 0.7285, PacBio 0.8189 against 0.8132, and ARI up
-in both. The hierarchical batch-and-merge is doing something useful rather than approximating the
-single pass.
 
 ### The downstream check: does a better clustering give better transcripts?
 
@@ -706,8 +725,11 @@ measure nothing.
 It wins on recall, precision and F1 together, so this is not a threshold artefact — and the lenient
 band (identity ≥0.90, length within 20%) gives the same ordering.
 
-This agrees with the intrinsic PacBio metrics rather than contradicting them, which is worth saying:
-the gene-level V-measure said isONclust1 (0.8132 against 0.6492), and the transcripts agree.
+**This is the confirmation that matters**, because it is the only metric here that is not a proxy:
+the gene-level V-measure picked isONclust1 (0.8132 against 0.6492) and the reconstructed transcripts
+agree. Note that the transcript-level intrinsic metric picked isONclust3 on ONT — had that been
+treated as a target, it would have pointed away from the clustering that actually reconstructs more
+transcripts.
 
 ### And the whole-pipeline runtime inverts the clustering runtime
 

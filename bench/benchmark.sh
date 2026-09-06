@@ -21,6 +21,12 @@
 # bench/make_truth.sh; without one, corpora are timed but not scored and the
 # table says so rather than printing a meaningless number.
 #
+# PASS THE GENE-LEVEL TRUTH. isONclust is a gene clustering tool and that is the
+# level results are judged at. Transcript-level truth is worth looking at to
+# understand a clustering's shape, but it disagrees with the gene-level verdict
+# on ONT and agrees on PacBio -- so it is a diagnostic, never a target. See
+# PORTING.md, "Accuracy".
+#
 # DO NOT score accuracy on the simulated corpora. Every base in them carries the
 # same quality character (`I`, phred 40), both algorithms are quality-driven, and
 # isONclust3 degenerates to near-singletons there. That measures the simulator.
