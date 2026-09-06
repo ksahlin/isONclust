@@ -1563,6 +1563,88 @@ fastq. So every non-representative read's quality string can be released as soon
 computed, and a representative's can be re-read from `sorted.fastq` at write time. That is pure
 storage with no semantic change, and it is the largest single win available.
 
+
+#### What was done, and what it actually saved
+
+Three changes landed, each verified with `bench/equivalence.sh verify` (27/27) before the next:
+
+1. **Stream `sorted.fastq` into `SweepRead` directly.** The clustering stage slurped the file into a
+   `String`, parsed that into `Vec<Record>`, copied it into `Vec<Scored>` and copied *that* into
+   `Vec<SweepRead>`. Neither intermediate was read for anything else. `fastq::for_each` is the same
+   parser with its line source made generic — the lookahead it carries between records was already
+   an owned `String`, so nothing borrowed from the file text.
+2. **Share `seq` and `qual` between `SweepRead` and `ReadInfo`** as `Arc<[u8]>` instead of cloning.
+   Every read starts as its own representative, so the clone was a second resident copy of every
+   base and quality score. Neither buffer is ever mutated, and switching to `Arc<[u8]>` made the
+   compiler prove it: `Arc<[u8]>` has no `DerefMut`, and only two construction sites needed changing.
+3. **Stream the sort stage too**, in and out. It held the file text, the records, the scored copies
+   and the whole of `sorted.fastq` as one `String`. `score_reads` became `score_record`, which has no
+   state between records.
+
+Measured on `droso_100k` at `--t 1`:
+
+| | before | after |
+| --- | --- | --- |
+| peak RSS, full run | 1409 MB | **1121 MB** |
+| peak *live heap*, full run | 839 MB | **283 MB** (−66%) |
+| peak RSS, sort stage alone | 605 MB | **172 MB** (−72%) |
+
+The prediction table above was right about the direction and wrong about one attribution. Streaming
+was worth more than the 16.4% predicted, because the slurp was only the visible part — the three
+copies downstream of it were the rest. The quality win was collected as *half* of change 2 rather
+than as a release: the duplicate copy went, the remaining one stayed, because `qual` is still needed
+positionally by `compressed_error_rate` (computed lazily, and eagerly precomputing it would change
+what a read that never reaches step 2 reports) and as a string when a representative's record is
+written out. Releasing that last copy needs a second pass over `sorted.fastq` at output time and is
+worth ~64 MB; it has not been done.
+
+Peak RSS moved much less than the heap did, and run-to-run variance on it is around 10%, so the
+full-run RSS row above is not the headline the heap row is. Why it barely moved is the next section,
+and it is the more useful result.
+
+Across the benchmark corpora, measured as the best of three runs each, peak RSS fell on every row:
+
+| corpus | preset | `--t` | before | after |
+| --- | --- | --- | --- | --- |
+| sirv_real_10k | ont | 1 | 127 MB | 72 MB (−43%) |
+| sirv_real_10k | ont | 8 | 174 MB | 113 MB (−35%) |
+| sirv_pacbio | isoseq | 1 | 1114 MB | 851 MB (−23%) |
+| sirv_pacbio | isoseq | 8 | 1039 MB | 697 MB (−32%) |
+| droso_20k | ont | 1 | 535 MB | 402 MB (−24%) |
+| droso_20k | ont | 8 | 846 MB | 643 MB (−23%) |
+
+
+#### After all that, peak RSS is set by parasail, not by the reads
+
+The three changes cut the live Rust heap by 66% and peak RSS by far less. That gap is the finding:
+**only 283 MB of the ~1050 MB resident goes through Rust's allocator at all.** parasail's C library
+allocates its own matrices with `malloc`, so the tracking allocator above cannot see them.
+
+Building both aligners and measuring the same run settles it, on `droso_100k` at `--t 1`:
+
+| build | peak RSS |
+| --- | --- |
+| `--features parasail-ffi` (default) — parasail's C library | **1121 MB** |
+| `--no-default-features` — the port's own scalar parasail | **579 MB** |
+
+parasail C costs **542 MB of peak RSS**, and the reason is in the traceback representation.
+`sg_trace_scan_16` stores four bytes per cell; the port's reimplementation packs the same four
+traceback bits into **one byte per cell** (`packed: vec![0u8; n * m]`, see `parasail.rs`).
+droso_100k's longest read is 7228 bp, so a single alignment of two such reads is 199 MB of
+traceback in the C library against 50 MB in the port, before either one's score buffers.
+
+So the port has a real speed/memory dial, and both ends of it are exact:
+
+- **default**: 13–16x faster alignment, ~2x the peak RSS.
+- **`--no-default-features`**: half the memory, and needs neither cmake nor libclang to build.
+
+This also caps what any further work on read storage can achieve. With the C aligner, 2-bit packing
+would remove ~40 MB of a 1121 MB peak — under 4% — because the peak is one alignment of the longest
+read pair, not the reads in store. Against `--no-default-features` it is worth more. **Anyone
+optimising this further should attack the traceback allocation first**: bounding it, banding it, or
+reusing one buffer across calls would move peak RSS more than every change described above put
+together.
+
 #### On 2-bit packing, when it comes
 
 - **It breaks the byte-identity contract on any dataset containing `N` or another non-ACGT

@@ -57,35 +57,52 @@ winner on ONT than on PacBio, while the gene-level verdict is stable.
 | corpus | preset | tool | `--t` | secs | peak MB | speedup |
 |---|---|---|---|---|---|---|
 | SIRV ONT, 10k | ont | python | 1 | 4.25 | 235 | — |
-| | | **port** | 1 | **0.80** | **119** | **5.3x** |
+| | | **port** | 1 | **0.80** | **72** | **5.3x** |
 | | | python | 8 | 1.33 | 206 | — |
-| | | **port** | 8 | **0.25** | 177 | **5.3x** |
+| | | **port** | 8 | **0.25** | **113** | **5.3x** |
 | | | isONclust3 | — | 0.65 | 32 | |
 | SIRV PacBio, 17.6k | isoseq | python | 1 | 23.64 | 1092 | — |
-| | | **port** | 1 | **9.53** | 1082 | **2.5x** |
+| | | **port** | 1 | **9.53** | **851** | **2.5x** |
 | | | python | 8 | 7.06 | 454 | — |
-| | | **port** | 8 | **3.68** | 1051 | **1.9x** |
+| | | **port** | 8 | **3.68** | 697 | **1.9x** |
 | | | isONclust3 | — | 1.64 | 119 | |
 | Drosophila ONT, 20k | ont | python | 1 | 16.08 | 704 | — |
-| | | **port** | 1 | **6.29** | **525** | **2.6x** |
+| | | **port** | 1 | **6.29** | **402** | **2.6x** |
 | | | python | 8 | 7.46 | 826 | — |
-| | | **port** | 8 | **3.08** | **740** | **2.4x** |
+| | | **port** | 8 | **3.08** | **643** | **2.4x** |
 | | | isONclust3 | — | 1.62 | 204 | |
 
 **The port is 1.9–5.3x faster than the reference on every corpus and thread
-count**, at equal or lower memory except on PacBio at `--t 8`, where eight
-resident batches cost more than the reference's eight processes.
+count**, and uses less memory than it on five of the six rows — the exception is
+PacBio at `--t 8`, where eight resident batches still cost more than the
+reference's eight processes (697 MB against 454 MB), though that gap has closed
+from 1051 MB. Against the port's own previous release, peak RSS is down 23–43%
+on every row.
 
-**Memory is where both isONclust versions lose to isONclust3**, by 2.6x on
-Drosophila, 3.7x on SIRV ONT and 9.1x on SIRV PacBio. That is inherited from the
-algorithm, not from the port: the reference holds every read's sequence *and*
-quality string resident, and holds them more than once — the sorted file is read
-back into a second array, and `reads_to_clusters` copies each entry again. The
-port reproduces that structure because reproducing it exactly is the contract.
-Packing nucleotides two bits each and caching one float per read instead of
-retaining the quality string are the two obvious remedies; both are specified,
-with their costs, under *Memory: the whole dataset is resident* in
-[PORTING.md](PORTING.md), and neither has been implemented.
+Those memory figures are the result of profiling rather than guesswork, and the
+guess had been wrong. A tracking allocator showed the cost was not the encoding
+of the reads but the number of copies of them: the clustering stage held the file
+text, the parsed records, a scored copy and a `SweepRead` copy simultaneously,
+and the sort stage did the same. Streaming both stages and sharing sequence and
+quality between the two structures that needed them cut the live Rust heap on
+droso_100k by 66%, from 839 MB to 283 MB.
+
+**Peak RSS, though, is now set by parasail rather than by the reads.** Only
+283 MB of that run's ~1050 MB resident goes through Rust's allocator; the rest is
+the C library, which mallocs its own matrices. Building the same run against the
+port's own aligner gives 579 MB against 1121 MB — parasail C costs 542 MB,
+because `sg_trace_scan_16` stores four bytes of traceback per cell where the
+port's reimplementation packs the same information into one. So
+`--no-default-features` is a real dial: half the memory, 13–16x slower
+alignment, and byte-identical either way.
+
+**Both isONclust versions still use more memory than isONclust3** — 2.0x on
+Drosophila, 2.3x on SIRV ONT and 7.2x on SIRV PacBio at `--t 1`. Two further
+changes are specified but unimplemented, under *Memory: measured* in
+[PORTING.md](PORTING.md): releasing the last quality-string copy (~64 MB), and
+2-bit packing the sequences. Note that against the default build 2-bit packing
+would remove under 4% of peak, since the peak is one alignment of the longest
+read pair; bounding parasail's traceback allocation would move it far more.
 
 Most of that speed is one change: linking parasail's C library instead of using
 the port's own exact scalar reimplementation of it. Alignment is 96–99.6% of
