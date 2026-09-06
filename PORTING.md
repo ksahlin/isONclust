@@ -1508,7 +1508,7 @@ Two ways to keep that property, in order of appeal:
 What is *not* worth doing on this evidence: adopting block-aligner or WFA2. They are slower than the
 exact option and change the answer.
 
-### Memory: the whole dataset is resident, and 2-bit encoding is the obvious win
+### Memory: measured, and 2-bit encoding is *not* the biggest win
 
 **Yes, every read is in memory at once, and more than once.** Confirmed by reading and by measuring:
 
@@ -1521,15 +1521,49 @@ exact option and change the answer.
 - In parallel mode (`--t > 1`) the batches are **pickled to worker processes**, so the peak is
   multiplied by the number of cores.
 
-Measured on `droso_100k` — 99 547 reads, a 136 MB fastq:
+#### Where the bytes actually are
 
-| | peak RSS |
-| --- | --- |
-| reference, full run at `--t 1` | **1476 MB** (~11x the input) |
-| the port's sorting stage alone | 608 MB (~4.5x) |
+Measured on `droso_100k` — 99 547 reads, a 136 MB fastq whose payload is 64.4 MB of sequence,
+64.4 MB of quality and 6.9 MB of accessions. Peak RSS of the port at `--t 1` is **1409 MB**, about
+10x the payload. Splitting the run with `--use_old_sorted_file` puts the peak in the **clustering**
+stage (1570 MB), not the sort (608 MB).
 
-**The proposal: pack nucleotides two bits each** (`A=00, C=01, G=10, T=11`), which cuts sequence
-storage 4x. Worth doing, and worth knowing exactly what it costs before it lands:
+A tracking global allocator, snapshotting a histogram of live bytes by allocation size at each new
+peak, attributes the 839 MB of *live heap* at that peak as:
+
+| allocation size | live at peak | share | what it is |
+| --- | --- | --- | --- |
+| 512 B – 4 KB | **421 MB** | **50.2%** | per-read `seq` and `qual` copies (mean read 674 bp) |
+| 128 – 256 MB | **138 MB** | **16.4%** | one allocation: `read_to_string` slurping `sorted.fastq` whole |
+| 8 – 64 MB | 115 MB | 13.7% | the `Vec` backing arrays — `Vec<Record>`, `Vec<SweepRead>`, the `Vec<&str>` line index |
+| 64 – 512 B | 117 MB | 14.0% | `String`/`Vec` headers, accessions, hash-map nodes |
+
+The gap between 839 MB of live heap and 1409 MB of RSS is allocator retention — freed pages the
+system allocator has not returned.
+
+#### What that means for 2-bit packing
+
+Sequence and quality are the *same* number of bytes, so of the 421 MB in payload-sized allocations,
+about 210 MB is sequence. Packing it two bits per base takes that to ~53 MB:
+
+| change | saves | of heap peak | breaks byte-identity? |
+| --- | --- | --- | --- |
+| stop slurping `sorted.fastq`; stream it | 138 MB | 16.4% | no |
+| drop `qual` once its scalars are derived | ~210 MB | 25.0% | no |
+| 2-bit pack `seq` | ~157 MB | 18.7% | only on non-ACGT input |
+
+**2-bit packing is the smallest of the three and the only one that touches the contract.** The
+amplification is structural — copies and a whole-file slurp — not the encoding, so encoding is the
+wrong lever to pull first.
+
+The quality result is the surprise: **`qual` is not read anywhere in `cluster.rs`.** It is used to
+score reads during the sort, once per read to compute `compressed_error_rate` (stored as a single
+`f64` on `ReadInfo`), and then only again when a *representative's* record is written to the output
+fastq. So every non-representative read's quality string can be released as soon as its error rate is
+computed, and a representative's can be re-read from `sorted.fastq` at write time. That is pure
+storage with no semantic change, and it is the largest single win available.
+
+#### On 2-bit packing, when it comes
 
 - **It breaks the byte-identity contract on any dataset containing `N` or another non-ACGT
   character**, if those are mapped to a pseudo-random nucleotide. This is not hypothetical: `N` is
@@ -1542,19 +1576,13 @@ storage 4x. Worth doing, and worth knowing exactly what it costs before it lands
   lossless on everything currently tested. That is a reason to be careful rather than reassured: it
   means the test suite cannot see the divergence, which is *Finding 5*'s lesson again. A corpus with
   `N`s has to be built before this lands.
-- **A third option avoids the contract break entirely:** three bits per base, or 2-bit plus a
-  sparse side-table of exception positions. `N` is rare in ONT and PacBio output, so a side-table
-  costs almost nothing and keeps the port exact. Prefer that unless measurement says the extra
-  indirection is expensive.
-- **Quality strings are the other half of the footprint and cannot be 2-bit** — they carry 40+
-  distinct values. They also cannot simply be dropped after scoring: `reads_to_clusters` needs the
-  quality string again to compute the homopolymer-compressed error rate, and
-  `get_best_cluster_block_align` recomputes `poisson_mean` from the *full* quality string for every
-  candidate it considers. Caching one float per read instead of retaining the string is likely the
-  larger and safer win, and it is behaviour-neutral.
+- **A sparse exception table keeps it exact:** 2-bit plus a side-table of non-ACGT positions. `N` is
+  rare in ONT and PacBio output, so the table costs almost nothing and the contract holds on every
+  input, not just ACGT-only ones. Prefer that unless measurement says the indirection is expensive.
 
-Order of work, when it comes: build an `N`-containing corpus; cache the per-read quality statistics;
-then pack sequences, with the exception table; measure each separately.
+Order of work: stream the sorted file; release quality strings after the error rate is derived;
+build an `N`-containing corpus; then pack sequences behind an exception table. Measure each
+separately — the table above is the prediction, and each step should be checked against it.
 
 ### Performance and structure, once exact
 
