@@ -36,17 +36,38 @@ fn chop(line: &str) -> &str {
 
 /// Parse fastq/fasta exactly as the reference's generator does.
 pub fn read(text: &str) -> Vec<Record> {
-    let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let mut out = Vec::new();
-    let mut i = 0usize;
+    for_each(text.split_inclusive('\n'), |r| out.push(r));
+    out
+}
+
+/// The parser proper: hands each record to `f` instead of collecting them.
+///
+/// Lines arrive **inclusive of their trailing `\n`**, exactly as
+/// `split_inclusive('\n')` yields them, because `chop` is the only thing allowed
+/// to remove it -- the CRLF behaviour documented above depends on nothing else
+/// being stripped.
+///
+/// This exists so `sorted.fastq` can be turned into reads without holding the
+/// file and the parsed records in memory at the same time. Measured on
+/// droso_100k, the slurp alone was 138 MB of a 839 MB heap peak; see PORTING.md.
+pub fn for_each<S, I, F>(lines: I, mut f: F)
+where
+    S: AsRef<str>,
+    I: IntoIterator<Item = S>,
+    F: FnMut(Record),
+{
+    let mut it = lines.into_iter();
+    // The lookahead the reference's `readfq` carries between records. It was
+    // already an owned `String` before this streamed, which is why the parser
+    // needs no borrow into the file text.
     let mut last: Option<String> = None;
 
     loop {
         if last.is_none() {
             // Look for the next header.
-            while i < lines.len() {
-                let l = lines[i];
-                i += 1;
+            for l in it.by_ref() {
+                let l = l.as_ref();
                 if l.starts_with('>') || l.starts_with('@') {
                     last = Some(chop(l).to_string());
                     break;
@@ -59,24 +80,23 @@ pub fn read(text: &str) -> Vec<Record> {
         };
 
         let name = header[1..].replace(' ', "_");
-        let mut seqs: Vec<&str> = Vec::new();
+        let mut seq = String::new();
         let mut next_header: Option<String> = None;
-        while i < lines.len() {
-            let l = lines[i];
-            i += 1;
+        for l in it.by_ref() {
+            let l = l.as_ref();
             if l.starts_with('@') || l.starts_with('+') || l.starts_with('>') {
                 next_header = Some(chop(l).to_string());
                 break;
             }
-            seqs.push(chop(l));
+            seq.push_str(chop(l));
         }
 
         let is_fastq = matches!(&next_header, Some(h) if h.starts_with('+'));
         if !is_fastq {
             // fasta record
-            out.push(Record {
+            f(Record {
                 name,
-                seq: seqs.concat(),
+                seq,
                 qual: None,
             });
             match next_header {
@@ -86,22 +106,22 @@ pub fn read(text: &str) -> Vec<Record> {
             continue;
         }
 
-        let seq = seqs.concat();
-        let mut quals: Vec<&str> = Vec::new();
+        let seq_chars = seq.chars().count();
+        let mut quals = String::new();
         let mut leng = 0usize;
         let mut completed = false;
-        while i < lines.len() {
-            let l = lines[i];
-            i += 1;
-            let q = chop(l);
-            quals.push(q);
+        for l in it.by_ref() {
+            let q = chop(l.as_ref());
+            quals.push_str(q);
             leng += q.chars().count();
-            if leng >= seq.chars().count() {
+            if leng >= seq_chars {
                 last = None;
-                out.push(Record {
+                f(Record {
+                    // Cloned because the compiler cannot see that the `!completed`
+                    // branch below is unreachable once this has run.
                     name: name.clone(),
-                    seq: seq.clone(),
-                    qual: Some(quals.concat()),
+                    seq: std::mem::take(&mut seq),
+                    qual: Some(std::mem::take(&mut quals)),
                 });
                 completed = true;
                 break;
@@ -110,7 +130,7 @@ pub fn read(text: &str) -> Vec<Record> {
         if !completed {
             // EOF before enough quality: the reference yields a fasta record
             // and stops entirely.
-            out.push(Record {
+            f(Record {
                 name,
                 seq,
                 qual: None,
@@ -118,12 +138,125 @@ pub fn read(text: &str) -> Vec<Record> {
             break;
         }
     }
-    out
+}
+
+/// Stream a fastq/fasta file, handing each record to `f`.
+///
+/// Reads a line at a time rather than the whole file, and validates UTF-8 per
+/// line -- equivalent to `read_to_string`, because `\n` cannot appear inside a
+/// multi-byte UTF-8 sequence.
+pub fn for_each_file<F>(path: &std::path::Path, f: F) -> std::io::Result<()>
+where
+    F: FnMut(Record),
+{
+    use std::io::BufRead;
+    let file = std::fs::File::open(path)?;
+    let mut rdr = std::io::BufReader::with_capacity(1 << 20, file);
+    let mut err: Option<std::io::Error> = None;
+    {
+        let mut buf = Vec::new();
+        let lines = std::iter::from_fn(|| {
+            buf.clear();
+            match rdr.read_until(b'\n', &mut buf) {
+                Ok(0) => None,
+                Ok(_) => match std::str::from_utf8(&buf) {
+                    Ok(s) => Some(s.to_string()),
+                    Err(_) => {
+                        err = Some(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "stream did not contain valid UTF-8",
+                        ));
+                        None
+                    }
+                },
+                Err(e) => {
+                    err = Some(e);
+                    None
+                }
+            }
+        });
+        for_each(lines, f);
+    }
+    match err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `for_each_file` must parse byte-for-byte what `read` parses from the
+    /// whole file. The streaming path exists only to save memory; any
+    /// difference between the two is a silent divergence in every run.
+    ///
+    /// Run against the committed fixture, and against `$ISONCLUST_DATA` corpora
+    /// when they are present, because the fixture is 120 reads and the real ones
+    /// carry multi-line records, odd headers and the no-trailing-newline case.
+    #[test]
+    fn streaming_and_slurping_parse_identically() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repo root");
+        let mut checked = 0usize;
+        let mut paths = vec![root.join("test/sirv_sim_120.fastq")];
+        if let Ok(data) = std::env::var("ISONCLUST_DATA") {
+            for rel in [
+                "sirv/SIRV_real_10k.fastq",
+                "droso/full_length_output_first_20k.fq",
+                "pacbio/sirv/sirv_pacbio.fastq",
+            ] {
+                let p = std::path::Path::new(&data).join(rel);
+                if p.exists() {
+                    paths.push(p);
+                }
+            }
+        }
+        for path in paths {
+            let text = std::fs::read_to_string(&path).expect("fixture readable");
+            let want = read(&text);
+            let mut got = Vec::new();
+            for_each_file(&path, |r| got.push(r)).expect("streams");
+            assert_eq!(got.len(), want.len(), "record count for {}", path.display());
+            assert_eq!(got, want, "records differ for {}", path.display());
+            checked += 1;
+        }
+        assert!(checked >= 1);
+    }
+
+    /// The cases the whole-file parser is subtle about, driven through the
+    /// streaming path via a temporary file so both see the same bytes.
+    #[test]
+    fn streaming_matches_on_the_awkward_shapes() {
+        let cases = [
+            // no trailing newline (Finding 11)
+            "@r1\nACGT\n+\nIIII",
+            // multi-line sequence and quality
+            "@r1\nAC\nGT\n+\nII\nII\n@r2\nTTTT\n+\nJJJJ\n",
+            // fasta, no quality at all
+            ">r1\nACGT\n>r2\nTTTT\n",
+            // CRLF, whose \r must survive into name, seq and qual
+            "@r1\r\nACGT\r\n+\r\nIIII\r\n",
+            // quality shorter than the sequence: yields qual: None
+            "@r1\nACGTACGT\n+\nII\n",
+            // junk before the first header
+            "noise\n@r1\nACGT\n+\nIIII\n",
+            // empty input
+            "",
+        ];
+        let dir = std::env::temp_dir().join("isonclust-fastq-stream-test");
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        for (i, text) in cases.iter().enumerate() {
+            let path = dir.join(format!("case{i}.fastq"));
+            std::fs::write(&path, text).expect("write");
+            let want = read(text);
+            let mut got = Vec::new();
+            for_each_file(&path, |r| got.push(r)).expect("streams");
+            assert_eq!(got, want, "case {i}: {text:?}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn reads_a_basic_fastq() {

@@ -510,27 +510,34 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
         return ExitCode::from(rc);
     }
     let sorted_path = std::path::Path::new(outfolder).join("sorted.fastq");
-    let text = match std::fs::read_to_string(&sorted_path) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("isONclust: cannot read {}: {e}", sorted_path.display());
-            return ExitCode::from(1);
-        }
-    };
     // The reference re-reads sorted.fastq rather than reusing the in-memory
     // array, and the score is recovered from the accession. Reproduced, because
     // the accession the sweep sees is the one WITH the score suffix.
-    let records = fastq::read(&text);
-    let reads: Vec<sorting::Scored> = records
-        .iter()
-        .map(|r| sorting::Scored {
-            acc: r.name.clone(),
-            seq: r.seq.clone(),
-            qual: r.qual.clone().unwrap_or_default(),
-            score: score_of(&r.name),
-            error_rate: f64::NAN,
-        })
-        .collect();
+    //
+    // Streamed straight into `SweepRead`. This used to slurp the file, parse it
+    // into `Vec<Record>`, copy that into `Vec<Scored>` and copy *that* into
+    // `Vec<SweepRead>` -- four resident copies of every base and quality score,
+    // where one will do. The two intermediates were never read for anything
+    // else. See PORTING.md, "Memory: measured".
+    let mut sweep_reads: Vec<sweep::SweepRead> = Vec::new();
+    if let Err(e) = fastq::for_each_file(&sorted_path, |r| {
+        let score = score_of(&r.name);
+        sweep_reads.push(sweep::SweepRead {
+            id: sweep_reads.len(),
+            prev_batch_index: 0,
+            acc: r.name,
+            seq: r.seq.into_bytes(),
+            qual: r.qual.unwrap_or_default().into_bytes(),
+            score,
+        });
+    }) {
+        eprintln!("isONclust: cannot read {}: {e}", sorted_path.display());
+        return ExitCode::from(1);
+    }
+
+    // Captured before the sweep consumes the reads; this is `reads.len()` as it
+    // was when the two intermediate vectors still existed.
+    let nr_reads = sweep_reads.len();
 
     let params = sweep::SweepParams {
         k,
@@ -541,19 +548,6 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
         mapped_threshold: args.mapped_threshold,
         aligned_threshold: args.aligned_threshold,
     };
-    let sweep_reads: Vec<sweep::SweepRead> = reads
-        .iter()
-        .enumerate()
-        .map(|(i, r)| sweep::SweepRead {
-            id: i,
-            prev_batch_index: 0,
-            acc: r.acc.clone(),
-            seq: r.seq.as_bytes().to_vec(),
-            qual: r.qual.as_bytes().to_vec(),
-            score: r.score,
-        })
-        .collect();
-
     let (clusters, representatives, stats) = if args.nr_cores > 1 {
         // --t > 1 is a DIFFERENT ALGORITHM, not a parallelised one. See
         // parallelize.rs and PORTING.md Finding 3.
@@ -699,7 +693,7 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
         times.report(&format!("--t {}", args.nr_cores));
     }
 
-    println!("Total number of reads iterated through:{}", reads.len());
+    println!("Total number of reads iterated through:{}", nr_reads);
     println!("Passed mapping criteria:{}", mapped_passed);
     println!("Passed alignment criteria in this process:{}", aln_passed);
     println!(
