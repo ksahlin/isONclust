@@ -1,0 +1,36 @@
+# The corpora, TAB-separated: name<TAB>path<TAB>reads<TAB>purpose
+#
+# Only `smoke` is committed. Everything else is real data living outside the
+# repository, because this repository was just taken from 492 MB to 1 MB and
+# putting gigabytes of fastq back into it would undo that.
+#
+# The committed one is an exception on isONform's precedent, and for its reason:
+# a determinism gate that silently skips because its input is absent is worse
+# than no gate, so CI's input is tracked rather than fetched.
+#
+# Path resolution: a path starting with `test/` is repo-relative; anything else
+# is relative to $ISONCLUST_DATA (default ~/data/lrRNA-seq); an absolute path is
+# used as-is.
+#
+# WHAT REPLACED sample_alz_2k.fastq, AND WHY
+# ------------------------------------------
+# The old fixture (2500 PacBio CCS reads) was real but blind: at --k 15 it gave
+# BYTE-IDENTICAL output for --w 15 and --w 50, despite a 19x difference in
+# minimizer density, so a port with a broken minimizer window would have passed
+# every golden. On real SIRV ONT the same comparison gives 35 clusters vs 763.
+# Even the 120-read smoke fixture separates them (70 vs 76). See PORTING.md,
+# Finding 5.
+#
+# The PRESET column matters: running PacBio CCS reads with --ont (k13 w20) instead
+# of --isoseq (k15 w50) benchmarks the wrong configuration. isONclust3's --mode
+# takes the same distinction. Getting this wrong was a real mistake here.
+#
+# name	path	reads	preset	purpose
+smoke	test/sirv_sim_120.fastq	120	ont	committed. CI, goldens, the README install check. 54 of 68 SIRV transcripts, 7% simulated error, ground truth in every header
+sirv_sim_err0	sirv/reads_10k_err0.fastq	10000	ont	simulated, error-free. Exact per-read truth. The high-quality extreme: where an integral score can appear and reach Finding 6's float formatting
+sirv_sim_err7	sirv/reads_10k_err7%.fastq	10000	ont	simulated, 7% error. Exact per-read truth (@read_N_from_SIRV612). Paired with err0, this is the error-rate axis with everything else held fixed
+sirv_real_10k	sirv/SIRV_real_10k.fastq	10000	ont	real ONT. Truth is the transcriptome, not the read. Discriminates --w sharply (35 vs 763 clusters)
+sirv_real_100k	sirv/SIRV_real_100k.fastq	100000	ont	real ONT, depth. For the --t sweep and for profiling
+sirv_pacbio	pacbio/sirv/sirv_pacbio.fastq	17633	isoseq	real PacBio CCS. The --isoseq path on data it was designed for
+droso_20k	droso/full_length_output_first_20k.fq	20000	ont	real ONT, transcriptome scale, genome-only truth. THE ONE THAT REACHES FINDING 4: 937 of its reads have a homopolymer-compressed length in [k, w), the window-overrun zone that sample_alz_2k had zero of
+droso_100k	droso/full_length_output_first_100k.fq	100000	ont	real ONT, depth

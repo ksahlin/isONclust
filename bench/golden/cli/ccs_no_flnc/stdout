@@ -1,0 +1,1 @@
+isONclust needs both the ccs.bam file produced by ccs and the flnc file produced by isoseq3 cluster. 

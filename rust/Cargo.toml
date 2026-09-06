@@ -1,0 +1,65 @@
+[package]
+name = "isonclust"
+# Cargo requires semver; the reference's version is "0.0.6.1", which has four
+# components and is not valid here. The user-visible string is frozen in
+# src/text.rs as VERSION and is what `--version` prints, so this number is
+# internal only. Do not "fix" --version to read from CARGO_PKG_VERSION.
+version = "0.0.6"
+edition = "2021"
+# 1.85, matching the isONcorrect and isONform ports. parasail.rs and align.rs
+# are carried across from isONform verbatim and need at least 1.82
+# (std::iter::repeat_n); pinning to the same version as the repos the code comes
+# from means a toolchain that builds one builds all three.
+rust-version = "1.85"
+description = "De novo clustering of long-read transcriptome reads (Rust port of isONclust)"
+license = "GPL-3.0"
+
+# The binary must be named exactly `isONclust`. Three capitals, and macOS is
+# case-insensitive by default, so a wrong spelling resolves locally and fails
+# the first time it meets an ext4 filesystem. isONform's CI lost a day to
+# exactly this (PORTING.md, method: "a check that runs on one machine measures
+# that machine").
+[[bin]]
+name = "isONclust"
+path = "src/main.rs"
+
+[features]
+# parasail's own C library, linked. Exact by construction -- it IS the
+# implementation the reference calls -- and 13-16x faster than the scalar port,
+# which matters because alignment is 96-99.6% of runtime.
+#
+# On by default. `--no-default-features` drops it and falls back to the pure-Rust
+# `parasail.rs`, which is equally exact and needs no cmake or libclang; the
+# choice is build complexity against speed, not correctness.
+default = ["parasail-ffi"]
+parasail-ffi = ["dep:libparasail-sys"]
+
+[dependencies]
+libparasail-sys = { version = "0.2", optional = true }
+# Two candidate replacements for the exact scalar parasail port, which is 15x
+# slower than the C library and is what makes this port slower than the
+# reference on ONT data. Both are carried across from isONform with their
+# reconciliation logic; see PORTING.md, "The aligner". They are BEHIND A FLAG:
+# the default build is still exact, because byte-identity is the specification.
+#
+# WFA2. biodiff-wfa2-sys rather than libwfa2 because the latter's manifest uses
+# profile-rustflags and so needs nightly cargo; this one vendors WFA2-lib and
+# ships pregenerated bindings, so it needs cmake but not bindgen.
+biodiff-wfa2-sys = "2.3.5"
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+block-aligner = { version = "0.5.1", features = ["simd_neon"] }
+
+[target.'cfg(all(target_arch = "x86_64", target_feature = "avx2"))'.dependencies]
+block-aligner = { version = "0.5.1", features = ["simd_avx2"] }
+
+[target.'cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))'.dependencies]
+block-aligner = { version = "0.5.1", features = ["simd_sse2"] }
+
+[target.'cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))'.dependencies]
+block-aligner = { version = "0.5.1", features = ["no_simd"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

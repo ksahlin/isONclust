@@ -1,4 +1,23 @@
-**[isONclust3](https://github.com/aljpetri/isONclust3) is now available and is much faster and typically more accurate than isONclust. We recommend using [isONclust3](https://github.com/aljpetri/isONclust3) instead, particularly if you want to cluster more than 10 million reads.**
+### isONclust has been re-implemented in Rust and is 2–5x faster than the Python version, with byte-identical output.
+
+The Rust port produces exactly the same clusters as the Python implementation —
+verified byte-for-byte across 27 parameter settings on four corpora — while
+running 1.9–5.3x faster. Peak RSS is lower than the reference on ONT data
+(119 MB against 235 MB on SIRV, 525 MB against 704 MB on Drosophila at `--t 1`)
+and about level on PacBio; at `--t 8` on PacBio the port uses more, because its
+batches are resident threads rather than separate processes. See
+[Port-benchmark.md](Port-benchmark.md) for the full comparison, which also
+measures isONclust against [isONclust3](https://github.com/aljpetri/isONclust3)
+on accuracy, speed and memory.
+
+**On isONclust3.** It is a different algorithm with its own paper, and it is
+faster again. On transcriptome-scale Drosophila data the two are close in quality
+(V-measure 0.990 against 0.981); on the SIRV spike-in isONclust remains
+noticeably more accurate, mostly because isONclust3 merges distinct genes into
+large clusters there. That gap looks addressable rather than fundamental — see
+[Port-benchmark.md](Port-benchmark.md#where-isonclust3-struggles-and-why-it-is-probably-fixable).
+If you are clustering many millions of reads, isONclust3's speed may still
+decide it for you.
 
 isONclust
 ===========
@@ -65,6 +84,22 @@ pip install  isONclust
 ```
 `pip` will install the dependencies automatically for you. `pip` is pythons official package installer and is included in most python versions. If you do not have `pip`, it can be easily installed [from here](https://pip.pypa.io/en/stable/installing/) and upgraded with `pip install --upgrade pip`. 
 
+
+### Using the Rust implementation
+
+The Rust port is a drop-in replacement: same command line, same flags, same
+output files, byte for byte.
+
+```
+cd rust
+cargo build --release
+./target/release/isONclust --ont --fastq [reads.fastq] --outfolder [/path/to/output]
+```
+
+It links [parasail](https://github.com/jeffdaily/parasail) for alignment, which
+needs `cmake` and `libclang` at build time. If you would rather not have those,
+`cargo build --release --no-default-features` builds a pure-Rust version that
+produces identical output about 3x more slowly.
 
 ### Downloading source from GitHub
 
