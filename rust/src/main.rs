@@ -170,40 +170,64 @@ fn run_sort_stage(args: &cli::Args, outfolder: &str) -> u8 {
             return 3;
         }
     };
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) => {
-            // The reference dies with a traceback here; a message is better and
-            // this path is not in the byte-identity contract.
-            eprintln!("isONclust: cannot read {path}: {e}");
-            return 1;
-        }
-    };
-
-    let records = fastq::read(&text);
+    // Streamed and scored a record at a time. Holding the file text, the parsed
+    // records and the scored copies all at once was three resident copies of the
+    // input before the sort even began; `score_record` has no state between
+    // records, so this is the same computation in the same order. See PORTING.md,
+    // "Memory: measured".
+    let mut scored: Vec<sorting::Scored> = Vec::new();
     // Finding 11: the reference crashes with `TypeError: 'NoneType' object is
     // not iterable` when a record has no quality -- which happens when the file
-    // has no trailing newline. Reproduce the failure, with an explanation.
-    if let Some(bad) = records.iter().find(|r| r.qual.is_none()) {
+    // has no trailing newline. Reproduce the failure, with an explanation. The
+    // reference reports the first such read, so keep the first and carry on.
+    let mut no_qual: Option<String> = None;
+    if let Err(e) = fastq::for_each_file(std::path::Path::new(&path), |r| {
+        if r.qual.is_none() && no_qual.is_none() {
+            no_qual = Some(r.name.clone());
+        }
+        if let Some(sc) = sorting::score_record(&r, k, args.quality_threshold) {
+            scored.push(sc);
+        }
+    }) {
+        // The reference dies with a traceback here; a message is better and
+        // this path is not in the byte-identity contract.
+        eprintln!("isONclust: cannot read {path}: {e}");
+        return 1;
+    }
+    if let Some(name) = no_qual {
         eprintln!(
-            "isONclust: read '{}' has no quality values. The reference crashes here with",
-            bad.name
+            "isONclust: read '{name}' has no quality values. The reference crashes here with"
         );
         eprintln!("TypeError: 'NoneType' object is not iterable. The usual cause is a fastq");
         eprintln!("with no trailing newline on its last line. See PORTING.md, Finding 11.");
         return 1;
     }
 
-    let mut scored = sorting::score_reads(&records, k, args.quality_threshold);
     sorting::sort_by_score(&mut scored);
 
-    let mut body = String::new();
-    for r in &scored {
-        body.push_str(&sorting::sorted_fastq_record(r));
-    }
-    if let Err(e) = std::fs::write(&sorted_path, &body) {
-        eprintln!("isONclust: cannot write sorted.fastq: {e}");
-        return 1;
+    // Written record by record rather than concatenated into one String first,
+    // which was another whole copy of the input resident at the moment of the
+    // write.
+    {
+        use std::io::Write;
+        let f = match std::fs::File::create(&sorted_path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("isONclust: cannot write sorted.fastq: {e}");
+                return 1;
+            }
+        };
+        let mut w = std::io::BufWriter::with_capacity(1 << 20, f);
+        for r in &scored {
+            if let Err(e) = w.write_all(sorting::sorted_fastq_record(r).as_bytes()) {
+                eprintln!("isONclust: cannot write sorted.fastq: {e}");
+                return 1;
+            }
+        }
+        if let Err(e) = w.flush() {
+            eprintln!("isONclust: cannot write sorted.fastq: {e}");
+            return 1;
+        }
     }
     println!(
         "{} reads passed quality critera (avg phred Q val over {} and length > 2*k) and will be clustered.",

@@ -109,63 +109,61 @@ pub struct Scored {
     pub error_rate: f64,
 }
 
-/// Score and filter, in the reference's order.
+/// Score and filter one record, in the reference's order, or `None` if it is
+/// filtered out.
 ///
 /// The order matters: the length/homopolymer filter runs *before* the score is
 /// computed, and the quality filter runs *after* it, so a read can be scored
 /// and then discarded.
-pub fn score_reads(records: &[Record], k: usize, quality_threshold: f64) -> Vec<Scored> {
-    let mut out = Vec::new();
-    for r in records {
-        let qual = match &r.qual {
-            Some(q) => q,
-            // Finding 11: the reference does not guard this -- it dies with
-            // `TypeError: 'NoneType' object is not iterable`. Reproduced as a
-            // hard error by the caller; here we simply skip so the library is
-            // usable, and `run` re-raises.
-            None => continue,
-        };
-        let seq_b = r.seq.as_bytes();
-        let qual_b = qual.as_bytes();
+///
+/// Per-record rather than over a slice so the sort stage can stream the input
+/// file instead of materialising every `Record` first. There is no state
+/// between records, so this is the same computation in the same order.
+pub fn score_record(r: &Record, k: usize, quality_threshold: f64) -> Option<Scored> {
+    // Finding 11: the reference does not guard a missing quality string -- it
+    // dies with `TypeError: 'NoneType' object is not iterable`. Reproduced as a
+    // hard error by the caller; here we simply skip so the library is usable,
+    // and `run` re-raises.
+    let qual = r.qual.as_ref()?;
+    let seq_b = r.seq.as_bytes();
+    let qual_b = qual.as_bytes();
 
-        let hpol = homopolymer_compress(seq_b);
-        if seq_b.len() < 2 * k || hpol.len() < k {
-            continue;
-        }
-
-        let exp_err = expected_erroneous_kmers(qual_b, k);
-        let denom = (seq_b.len() - k + 1) as f64;
-        let p_no_error = 1.0 - exp_err / denom;
-        let score = p_no_error * denom;
-
-        // poisson_mean = sum([qual.count(c) * D_no_min[c] for c in set(qual)])
-        // A histogram gives the same multiset of terms; the compensated sum
-        // makes the order irrelevant.
-        let mut counts = [0u32; 256];
-        for &c in qual_b {
-            counts[c as usize] += 1;
-        }
-        let poisson_mean = fsum(
-            counts
-                .iter()
-                .enumerate()
-                .filter(|(_, n)| **n > 0)
-                .map(|(c, n)| f64::from(*n) * phred_uncapped(c as u8)),
-        );
-        let error_rate = poisson_mean / qual_b.len() as f64;
-        if phred_of(error_rate) <= quality_threshold {
-            continue;
-        }
-
-        out.push(Scored {
-            acc: r.name.clone(),
-            seq: r.seq.clone(),
-            qual: qual.clone(),
-            score,
-            error_rate,
-        });
+    let hpol = homopolymer_compress(seq_b);
+    if seq_b.len() < 2 * k || hpol.len() < k {
+        return None;
     }
-    out
+
+    let exp_err = expected_erroneous_kmers(qual_b, k);
+    let denom = (seq_b.len() - k + 1) as f64;
+    let p_no_error = 1.0 - exp_err / denom;
+    let score = p_no_error * denom;
+
+    // poisson_mean = sum([qual.count(c) * D_no_min[c] for c in set(qual)])
+    // A histogram gives the same multiset of terms; the compensated sum
+    // makes the order irrelevant.
+    let mut counts = [0u32; 256];
+    for &c in qual_b {
+        counts[c as usize] += 1;
+    }
+    let poisson_mean = fsum(
+        counts
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n > 0)
+            .map(|(c, n)| f64::from(*n) * phred_uncapped(c as u8)),
+    );
+    let error_rate = poisson_mean / qual_b.len() as f64;
+    if phred_of(error_rate) <= quality_threshold {
+        return None;
+    }
+
+    Some(Scored {
+        acc: r.name.clone(),
+        seq: r.seq.clone(),
+        qual: qual.clone(),
+        score,
+        error_rate,
+    })
 }
 
 /// `read_array.sort(key=lambda x: x[3], reverse=True)`.
