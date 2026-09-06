@@ -50,8 +50,20 @@ done
 command -v minimap2 >/dev/null || { echo "error: minimap2 not found" >&2; exit 1; }
 
 # -x map-ont for nanopore; --secondary=no so each read has at most one hit.
+# Ensembl-style fasta headers carry `gene:FBgn...`; SIRV names encode the gene in
+# the transcript id itself. Build a transcript->gene map when the header has one,
+# so --level gene works for both.
+GENEMAP="$(mktemp)"
+grep '^>' "$REF" | sed 's/^>//' \
+  | awk '{ tx=$1; g=""; for (i=1;i<=NF;i++) if ($i ~ /^gene:/) { g=substr($i,6) }
+           if (g != "") print tx "\t" g }' > "$GENEMAP"
+if [[ -s "$GENEMAP" ]]; then
+  echo "  transcript->gene map: $(wc -l < "$GENEMAP" | tr -d ' ') entries"
+fi
+
 minimap2 -ax map-ont --secondary=no -t 8 "$REF" "$READS" 2>/dev/null \
-  | awk -v level="$LEVEL" '
+  | awk -v level="$LEVEL" -v genemap="$GENEMAP" '
+      BEGIN { while ((getline line < genemap) > 0) { split(line, a, "\t"); gene[a[1]] = a[2] } }
       /^@/ { next }
       {
         flag = $2
@@ -63,11 +75,16 @@ minimap2 -ax map-ont --secondary=no -t 8 "$REF" "$READS" 2>/dev/null \
         if (ref == "*") next
         cls = ref
         if (level == "gene") {
-          # SIRV101 -> SIRV1; anything else is left alone
+          # SIRV101 -> SIRV1
           if (match(ref, /^SIRV[0-9]/)) cls = substr(ref, 1, 5)
+          # Ensembl transcript -> its gene, via the map built above. Reference
+          # names in the SAM are the bare transcript id, so the gene has to come
+          # from the fasta headers.
+          else if (ref in gene) cls = gene[ref]
         }
         print acc "\t" cls
       }' | LC_ALL=C sort -u > "$OUT.qname"
+rm -f "$GENEMAP"
 
 # The tools disagree on what a read is called, so emit truth under every form
 # they use. minimap2's QNAME stops at the first whitespace; isONclust's readfq

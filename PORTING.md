@@ -597,31 +597,38 @@ PacBio, and the matching `--mode` for isONclust3. Getting that wrong was a real 
 first PacBio numbers were taken with ONT parameters, which benchmarks a configuration nobody runs.
 `bench/corpora.tsv` now carries a preset column so it cannot be forgotten.
 
+Measured with the default build, which links parasail's C library. The full tables, including
+cluster-size distributions and the reproduction commands, are in
+[`Port-benchmark.md`](Port-benchmark.md) — that file is the published comparison; this section is the
+engineering summary.
+
 | corpus | preset | tool | `--t` | secs | peak MB | clusters |
 | --- | --- | --- | --- | --- | --- | --- |
-| `sirv_real_10k` | ont | python | 1 | 4.27 | 186 | 36 |
-| | | **port** | 1 | 5.60 | **114** | 36 |
-| | | isONclust3 | — | **0.65** | **32** | 66 |
-| | | python | 8 | 1.29 | 196 | 30 |
-| | | **port** | 8 | **1.27** | **164** | 30 |
-| `sirv_pacbio` | isoseq | python | 1 | 23.32 | 1045 | 151 |
-| | | **port** | 1 | 84.58 | **625** | 151 |
-| | | isONclust3 | — | **1.67** | **121** | 163 |
-| | | python | 8 | 7.01 | 463 | 110 |
-| | | **port** | 8 | 36.99 | 664 | 110 |
-| `droso_20k` | ont | python | 1 | 15.66 | 711 | 5679 |
-| | | **port** | 1 | 42.75 | **314** | 5679 |
-| | | isONclust3 | — | **1.54** | **203** | 6424 |
-| | | python | 8 | 7.07 | 821 | 5538 |
-| | | **port** | 8 | 21.47 | **555** | 5538 |
+| `sirv_real_10k` | ont | python | 1 | 4.25 | 235 | 36 |
+| | | **port** | 1 | **0.80** | **119** | 36 |
+| | | python | 8 | 1.33 | 206 | 30 |
+| | | **port** | 8 | **0.25** | 177 | 30 |
+| | | isONclust3 | — | 0.65 | 32 | 66 |
+| `sirv_pacbio` | isoseq | python | 1 | 23.64 | 1092 | 151 |
+| | | **port** | 1 | **9.53** | 1082 | 151 |
+| | | python | 8 | 7.06 | 454 | 110 |
+| | | **port** | 8 | **3.68** | 1051 | 110 |
+| | | isONclust3 | — | 1.64 | 119 | 163 |
+| `droso_20k` | ont | python | 1 | 16.08 | 704 | 5679 |
+| | | **port** | 1 | **6.29** | **525** | 5679 |
+| | | python | 8 | 7.46 | 826 | 5538 |
+| | | **port** | 8 | **3.08** | **740** | 5538 |
+| | | isONclust3 | — | 1.62 | 204 | 6424 |
 
-* **The port roughly halves memory** — 40–60% of the reference on every corpus except
-  `sirv_pacbio --t 8`, where the eight resident batches cost more than the reference's eight
-  processes do.
-* **Speed tracks the alignment count and nothing else.** Parity on `sirv_real_10k` (1806 alignments),
-  2.7–3.0x slower on `droso_20k` (11 241), 3.6–5.3x slower on `sirv_pacbio` (5485 alignments on long
-  CCS reads, which are quadratic in read length).
-* **isONclust3 is 6.6–14x faster at 4–6x less memory** on every corpus. It is a different algorithm.
+* **The port is 1.9–5.3x faster than the reference on every corpus and thread count**, at equal or
+  lower memory except `sirv_pacbio --t 8`, where eight resident batches cost more than the
+  reference's eight processes.
+* **Almost all of that came from one change**: linking parasail's C library rather than using the
+  port's own exact scalar reimplementation. Before it the port was 2.7–3.6x *slower* than the
+  reference on PacBio and Drosophila. Alignment is 96–99.6% of runtime and the scalar version is
+  13–16x slower than the library, so nothing else moved the number.
+* **isONclust3 is faster again** — 1.6–2.4x over the port — at 4–6x less memory. It is a different
+  algorithm.
 
 ### Where the port's time actually goes
 

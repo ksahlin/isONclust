@@ -103,9 +103,10 @@ import sys
 v=sorted(float(x) for x in sys.argv[1:])
 print(f'{v[len(v)//2]:.2f}')" "$@"; }
 
-printf '%-16s %-7s %-11s %-4s %8s %8s %7s %7s %7s %7s %7s\n' \
-  CORPUS PRESET TOOL -t "SECS" "PEAK_MB" "CLUST" "HOMOG" "COMPL" "V" "ARI"
-printf '%.0s-' {1..104}; echo
+printf '%-16s %-7s %-11s %-4s %8s %8s %7s %7s %7s %7s %7s %7s\n' \
+  CORPUS PRESET TOOL -t "SECS" "PEAK_MB" "CLUST" "HOMOG" "COMPL" "V" "ARI" "MAX_CL"
+printf '%.0s-' {1..112}; echo
+TOP10_LINES=()
 
 for corpus in $CORPORA; do
   fq="$(resolve_corpus "$corpus")"
@@ -150,18 +151,20 @@ for corpus in $CORPORA; do
       done
       secs="$(median "${secs_runs[@]}")"
 
-      nclust="-"; scores="      -       -       -       -"
+      nclust="-"; scores="      -       -       -       -       -"; top10=""
       if [[ -f "$out" ]]; then
         nclust="$(cut -f1 "$out" | sort -u | wc -l | tr -d ' ')"
+        top10="$(cut -f1 "$out" | sort | uniq -c | sort -rn | head -10 | awk '{printf "%s%s", sep, $1; sep=","}')"
         if [[ -n "$TRUTH" && -f "$TRUTH" ]]; then
           scores="$("$REF_PYTHON" bench/accuracy.py --clusters "$out" --truth-file "$TRUTH" \
                     --tsv --label x 2>/dev/null \
-                    | awk -F'\t' '{if ($7=="-") printf "      -       -       -       -";
-                                    else printf "%7.4f %7.4f %7.4f %7.4f", $7,$8,$9,$10}')"
+                    | awk -F'\t' '{if ($7=="-") printf "      -       -       -       - %7s", $6;
+                                    else printf "%7.4f %7.4f %7.4f %7.4f %7s", $7,$8,$9,$10,$6}')"
         fi
       fi
       printf '%-16s %-7s %-11s %-4s %8s %8s %7s %s\n' \
         "$corpus" "$preset" "$tool" "$t" "$secs" "$mb" "$nclust" "$scores"
+      [[ -n "$top10" ]] && TOP10_LINES+=("$(printf '  %-16s %-11s -t %-3s %s' "$corpus" "$tool" "$t" "$top10")")
 
       # The port must agree with the reference exactly. A difference here is a
       # port bug, not a result, so say so loudly.
@@ -173,3 +176,14 @@ for corpus in $CORPORA; do
     done
   done
 done
+
+# Cluster-size distribution. The largest cluster is not a curiosity: isONform's
+# cost grows steeply with it, and a single oversized cluster can cost more
+# downstream than the whole clustering step saves (PORTING.md, "The downstream
+# check"). It is also where a clusterer that merges genes shows up.
+if [[ ${#TOP10_LINES[@]} -gt 0 ]]; then
+  echo
+  echo "Top 10 cluster sizes"
+  printf '%.0s-' {1..112}; echo
+  for l in "${TOP10_LINES[@]}"; do echo "$l"; done
+fi

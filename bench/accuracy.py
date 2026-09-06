@@ -167,8 +167,15 @@ def main():
                f"{unknown} accessions did not match")
         if args.tsv:
             # A corpus the truth does not cover is normal when one benchmark run
-            # spans several corpora. Report nothing rather than aborting the run.
-            print("\t".join([args.label, "0", "0", "0", "0", "0", "-", "-", "-", "-"]))
+            # spans several corpora. Report the cluster shape, which needs no
+            # truth, and dashes for the metrics that do.
+            sizes = Counter(cl for cl, _ in pairs)
+            top10 = [v for _, v in sizes.most_common(10)]
+            print("\t".join([args.label, "0", "0", str(len(sizes)),
+                             str(sum(1 for v in sizes.values() if v == 1)),
+                             str(max(sizes.values()) if sizes else 0),
+                             "-", "-", "-", "-",
+                             ",".join(str(x) for x in top10)]))
             print(f"# {msg}", file=sys.stderr)
             return
         raise SystemExit(msg + ". Check that the clustering and the truth use the "
@@ -177,21 +184,27 @@ def main():
     h, c, v = homogeneity_completeness_v(labels_true, labels_pred)
     ari = adjusted_rand_index(labels_true, labels_pred)
 
-    sizes = Counter(labels_pred)
-    n_clusters = len(sizes)
-    singletons = sum(1 for s in sizes.values() if s == 1)
-    largest = max(sizes.values())
+    # Cluster sizes are reported over EVERY cluster, not only the scored reads,
+    # because a cluster made entirely of reads without truth is still a cluster
+    # the tool produced and still costs the downstream stage.
+    all_sizes = Counter(cl for cl, _ in pairs)
+    n_clusters = len(all_sizes)
+    singletons = sum(1 for v in all_sizes.values() if v == 1)
+    largest = max(all_sizes.values())
+    top10 = [v for _, v in all_sizes.most_common(10)]
     n_true = len(set(labels_true))
 
     if args.tsv:
         print("\t".join(str(x) for x in [
             args.label, len(labels_true), n_true, n_clusters, singletons, largest,
-            f"{h:.6f}", f"{c:.6f}", f"{v:.6f}", f"{ari:.6f}"]))
+            f"{h:.6f}", f"{c:.6f}", f"{v:.6f}", f"{ari:.6f}",
+            ",".join(str(x) for x in top10)]))
     else:
         print(f"  {args.label}")
         print(f"    reads scored      {len(labels_true)}  (unrecoverable truth: {unknown})")
         print(f"    true classes      {n_true}")
         print(f"    clusters          {n_clusters}  ({singletons} singletons, largest {largest})")
+        print(f"    top 10 sizes      {', '.join(str(x) for x in top10)}")
         print(f"    homogeneity       {h:.4f}")
         print(f"    completeness      {c:.4f}")
         print(f"    V-measure         {v:.4f}")
