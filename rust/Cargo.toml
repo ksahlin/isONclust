@@ -23,7 +23,19 @@ license = "GPL-3.0"
 name = "isONclust"
 path = "src/main.rs"
 
+[features]
+# parasail's own C library, linked. Exact by construction -- it IS the
+# implementation the reference calls -- and 13-16x faster than the scalar port,
+# which matters because alignment is 96-99.6% of runtime.
+#
+# On by default. `--no-default-features` drops it and falls back to the pure-Rust
+# `parasail.rs`, which is equally exact and needs no cmake or libclang; the
+# choice is build complexity against speed, not correctness.
+default = ["parasail-ffi"]
+parasail-ffi = ["dep:libparasail-sys"]
+
 [dependencies]
+libparasail-sys = { version = "0.2", optional = true }
 # Two candidate replacements for the exact scalar parasail port, which is 15x
 # slower than the C library and is what makes this port slower than the
 # reference on ONT data. Both are carried across from isONform with their

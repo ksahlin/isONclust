@@ -12,6 +12,8 @@ mod minimizers;
 mod p_emp;
 mod parallelize;
 mod parasail;
+#[cfg(feature = "parasail-ffi")]
+mod parasail_ffi;
 mod phred;
 mod pyfloat;
 mod pyround;

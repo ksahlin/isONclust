@@ -22,7 +22,24 @@
 //!   top_hits: break`), which is stricter than `get_best_cluster`'s
 //!   `min_fraction` walk.
 
-use crate::parasail::{self, Scoring};
+use crate::parasail::Scoring;
+
+/// The alignment engine.
+///
+/// Both paths are exact and produce identical output; `parasail-ffi` is simply
+/// 13-16x faster because it is parasail's own SIMD C library rather than our
+/// scalar reimplementation of it. See `parasail_ffi.rs`.
+#[inline]
+fn semiglobal(s1: &[u8], s2: &[u8], sc: Scoring) -> crate::parasail::Alignment {
+    #[cfg(feature = "parasail-ffi")]
+    {
+        crate::parasail_ffi::semiglobal(s1, s2, sc)
+    }
+    #[cfg(not(feature = "parasail-ffi"))]
+    {
+        crate::parasail::semiglobal(s1, s2, sc)
+    }
+}
 
 /// `parasail_block_alignment`'s return: the two gapped strings and the ratio.
 ///
@@ -57,7 +74,7 @@ pub fn parasail_block_alignment(
     match_id: i64,
     opening_penalty: i32,
 ) -> BlockAlignment {
-    let aln = parasail::semiglobal(s1, s2, scoring(opening_penalty));
+    let aln = semiglobal(s1, s2, scoring(opening_penalty));
     let (a1, a2) = crate::align::ops_to_seq(&aln.ops, s1, s2)
         .expect("a parasail CIGAR always expands against its own inputs");
 
