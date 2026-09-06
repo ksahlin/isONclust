@@ -2,7 +2,10 @@
 
 The Rust port produces exactly the same clusters as the Python implementation —
 verified byte-for-byte across 27 parameter settings on four corpora — while
-running 1.9–5.3x faster and using roughly half the memory. See
+running 1.9–5.3x faster. Peak RSS is lower than the reference on ONT data
+(119 MB against 235 MB on SIRV, 525 MB against 704 MB on Drosophila at `--t 1`)
+and about level on PacBio; at `--t 8` on PacBio the port uses more, because its
+batches are resident threads rather than separate processes. See
 [Port-benchmark.md](Port-benchmark.md) for the full comparison, which also
 measures isONclust against [isONclust3](https://github.com/aljpetri/isONclust3)
 on accuracy, speed and memory.

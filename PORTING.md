@@ -1508,7 +1508,7 @@ Two ways to keep that property, in order of appeal:
 What is *not* worth doing on this evidence: adopting block-aligner or WFA2. They are slower than the
 exact option and change the answer.
 
-### Memory: the whole dataset is resident### Memory: the whole dataset is resident, and 2-bit encoding is the obvious win
+### Memory: the whole dataset is resident, and 2-bit encoding is the obvious win
 
 **Yes, every read is in memory at once, and more than once.** Confirmed by reading and by measuring:
 

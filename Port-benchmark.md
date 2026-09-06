@@ -76,6 +76,17 @@ winner on ONT than on PacBio, while the gene-level verdict is stable.
 count**, at equal or lower memory except on PacBio at `--t 8`, where eight
 resident batches cost more than the reference's eight processes.
 
+**Memory is where both isONclust versions lose to isONclust3**, by 2.6x on
+Drosophila, 3.7x on SIRV ONT and 9.1x on SIRV PacBio. That is inherited from the
+algorithm, not from the port: the reference holds every read's sequence *and*
+quality string resident, and holds them more than once — the sorted file is read
+back into a second array, and `reads_to_clusters` copies each entry again. The
+port reproduces that structure because reproducing it exactly is the contract.
+Packing nucleotides two bits each and caching one float per read instead of
+retaining the quality string are the two obvious remedies; both are specified,
+with their costs, under *Memory: the whole dataset is resident* in
+[PORTING.md](PORTING.md), and neither has been implemented.
+
 Most of that speed is one change: linking parasail's C library instead of using
 the port's own exact scalar reimplementation of it. Alignment is 96–99.6% of
 runtime, and the scalar version is 13–16x slower than the C library. Before that
