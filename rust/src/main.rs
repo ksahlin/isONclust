@@ -526,8 +526,8 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
             id: sweep_reads.len(),
             prev_batch_index: 0,
             acc: r.name,
-            seq: r.seq.into_bytes(),
-            qual: r.qual.unwrap_or_default().into_bytes(),
+            seq: r.seq.into_bytes().into(),
+            qual: r.qual.unwrap_or_default().into_bytes().into(),
             score,
         });
     }) {

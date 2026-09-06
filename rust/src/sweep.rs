@@ -37,8 +37,13 @@ pub struct SweepRead {
     pub id: usize,
     pub prev_batch_index: i64,
     pub acc: String,
-    pub seq: Vec<u8>,
-    pub qual: Vec<u8>,
+    /// Shared with the `ReadInfo` for the same read rather than cloned into it.
+    /// Every read starts as its own representative, so cloning meant a second
+    /// resident copy of every base and quality score -- 129 MB of droso_100k's
+    /// heap peak. `Arc` keeps the existing ownership structure, which matters
+    /// because `ReadInfo` is moved between passes in parallel mode.
+    pub seq: std::sync::Arc<[u8]>,
+    pub qual: std::sync::Arc<[u8]>,
     pub score: f64,
 }
 
@@ -49,8 +54,9 @@ pub struct ReadInfo {
     pub id: usize,
     pub batch_index: i64,
     pub acc: String,
-    pub seq: Vec<u8>,
-    pub qual: Vec<u8>,
+    /// Shared with the read's `SweepRead`; see the note there.
+    pub seq: std::sync::Arc<[u8]>,
+    pub qual: std::sync::Arc<[u8]>,
     pub score: f64,
     pub error_rate: Option<f64>,
 }

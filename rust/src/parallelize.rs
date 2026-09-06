@@ -372,8 +372,8 @@ mod tests {
             id,
             prev_batch_index: b,
             acc: format!("r{id}_{score}"),
-            seq: vec![b'A'; len],
-            qual: vec![b'I'; len],
+            seq: vec![b'A'; len].into(),
+            qual: vec![b'I'; len].into(),
             score,
         }
     }
