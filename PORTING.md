@@ -1614,6 +1614,52 @@ Across the benchmark corpora, measured as the best of three runs each, peak RSS 
 | droso_20k | ont | 8 | 846 MB | 643 MB (−23%) |
 
 
+
+#### At transcriptome scale the saving is twice what the small corpora showed
+
+The corpora above are 10k–20k reads, and measuring memory work on them understates it, because the
+fixed costs (parasail, hash tables) are a large share of a small peak while the per-read copies are
+not. Repeated on `droso_1M` — 1 000 000 reads, mean 694 bp, max 8339 bp, 1.29 GB of sequence plus
+quality — at `--t 1`:
+
+| | peak RSS | time |
+| --- | --- | --- |
+| port, before the three changes | **10.99 GB** | 1472 s |
+| port, after | **4.79 GB** | 1501 s |
+| isONclust3 (all 16 cores, `--mode ont --seeding minimizer --post-cluster`) | 2.98 GB | 225 s |
+
+**−56% peak RSS, 2.29x less, for +2% time** — which is inside run-to-run noise. Against the 23–43%
+on the small corpora, this is roughly double, and it is the figure that matters for real runs.
+Amplification over payload falls from about 10x at droso_100k to **3.7x** here.
+
+It also changes the standing against isONclust3: the gap on this corpus is **1.61x** on memory,
+against the 2.6–9.1x measured on the 17k–20k corpora. The runtime gap (6.7x) is not a like-for-like
+comparison — isONclust3 used all 16 cores and the port ran single-threaded, and `--t > 1` is a
+different algorithm here rather than a parallelisation (Finding 3), so there is no thread count at
+which the two compute the same thing.
+
+#### Why the runtime is what it is
+
+The port is 1.9–5.3x the reference on every corpus, but its absolute runtime grows faster than the
+read count:
+
+| droso, `--ont --t 1` | reads | time | |
+| --- | --- | --- | --- |
+| droso_20k | 20 000 | 6.29 s | |
+| droso_100k | 100 000 | ~70 s | 5x reads, 11.1x time — exponent **1.50** |
+| droso_1M | 1 000 000 | 1501 s | 10x reads, 21.4x time — exponent **1.33** |
+
+That is the reference algorithm's shape, reproduced exactly, not a port artefact. The sweep is
+greedy and sequential: each read is compared against the representatives built *so far*, so as the
+corpus grows both the number of clusters and each read's candidate hit list grow, and the number of
+alignments grows faster than the number of reads. Alignment is already 96–99.6% of runtime. It is
+also why `--t > 1` cannot be a parallelisation — the loop's state depends on every prior iteration.
+
+**Still to measure: the Python reference at this scale.** It was left out because it is the slowest
+and least informative hour available — its peak on droso_100k was 1476 MB against a 136 MB payload,
+about 11x, so ~14 GB is the expectation here, and the port-against-port delta is the number that
+guides further work.
+
 #### The C aligner costs 542 MB of peak RSS, and it is not clear why
 
 The three changes cut the live Rust heap by 66% and peak RSS by much less. Part of that gap is

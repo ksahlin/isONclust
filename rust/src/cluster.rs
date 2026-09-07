@@ -38,18 +38,27 @@ pub trait Representatives {
 
 /// k-mer -> the representatives carrying it.
 ///
-/// Not yet reachable from the binary: the replay oracle is fed the reference's
-/// own hit lists, so the database and `get_all_hits` are exercised by unit tests
-/// only. They come into use when `reads_to_clusters` is ported, which is what
-/// will verify them differentially.
-///
 /// The reference uses a `set` of ints. Sets deduplicate, and a read *can* offer
 /// the same minimizer twice (see `minimizers`), so this deduplicates too. The
 /// stored order is insertion order, which differs from CPython's set order --
 /// that is safe only because the ranking key is total, and
 /// `assert_unique_accessions` is what keeps that true.
+///
+/// The `Vec<u8>` key is wasteful and could be packed: every distinct k-mer costs
+/// 24 bytes of inline `Vec` header plus a separate heap allocation for 13 bytes
+/// of sequence, and every value costs the same again for what is usually a single
+/// id. A k-mer of `k <= 32` fits in a `u64` at two bits per base, which removes
+/// the key's allocation entirely -- and unlike packing the reads, that is safe
+/// with respect to minimizer *selection*, because the map needs only equality
+/// while `get_kmer_minimizers` does its lexicographic comparison on the sequence
+/// itself. The non-ACGT caveat is the same one.
+///
+/// How much this is worth is NOT yet measured at the scale where it would matter.
+/// On droso_100k the per-entry heap allocations come to at most ~65 MB of a
+/// 283 MB live heap, and droso_20k emits 101 minimizers per read for 489k
+/// distinct 13-mers, so the count grows sub-linearly as k-mer space saturates.
+/// Measure before optimising; see PORTING.md, "Memory: measured".
 #[derive(Default)]
-#[allow(dead_code)]
 pub struct MinimizerDatabase {
     map: HashMap<Vec<u8>, Vec<usize>>,
 }
