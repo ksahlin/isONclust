@@ -102,9 +102,6 @@ pub fn homopolymer_compress(seq: &[u8]) -> Vec<u8> {
 /// A read that survived the filters.
 #[derive(Debug, Clone)]
 pub struct Scored {
-    pub acc: String,
-    pub seq: String,
-    pub qual: String,
     pub score: f64,
     pub error_rate: f64,
 }
@@ -157,13 +154,11 @@ pub fn score_record(r: &Record, k: usize, quality_threshold: f64) -> Option<Scor
         return None;
     }
 
-    Some(Scored {
-        acc: r.name.clone(),
-        seq: r.seq.clone(),
-        qual: qual.clone(),
-        score,
-        error_rate,
-    })
+    // Only the two numbers. The sort stage used to keep `acc`, `seq` and `qual`
+    // as owned Strings for every read -- 1.73 GB on SIRV_real_full, and once the
+    // clustering stage's sequences were packed, the largest thing in the run.
+    // The bytes are re-read from the input in the second pass instead.
+    Some(Scored { score, error_rate })
 }
 
 /// `read_array.sort(key=lambda x: x[3], reverse=True)`.
@@ -172,24 +167,25 @@ pub fn score_record(r: &Record, k: usize, quality_threshold: f64) -> Option<Scor
 /// scores keep their input order. `sort_by` in Rust is also stable, so this is
 /// a direct translation -- but only if the comparison never says "equal" for
 /// values that Python would order. Scores are finite here.
-pub fn sort_by_score(reads: &mut [Scored]) {
+pub fn sort_by_score<T>(reads: &mut [T], score: impl Fn(&T) -> f64) {
     reads.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
+        score(b)
+            .partial_cmp(&score(a))
             .expect("scores are finite; NaN would mean an upstream bug")
     });
 }
 
 /// The line the reference writes for each read: the score is appended to the
 /// accession with Python's float formatting, and read back out downstream.
-pub fn sorted_fastq_record(r: &Scored) -> String {
-    format!(
-        "@{}_{}\n{}\n+\n{}\n",
-        r.acc,
-        pyfloat::repr(r.score),
-        r.seq,
-        r.qual
-    )
+pub fn sorted_fastq_record(acc: &str, score: f64, seq: &str, qual: &str) -> String {
+    format!("@{}_{}\n{}\n+\n{}\n", acc, pyfloat::repr(score), seq, qual)
+}
+
+/// How many bytes `sorted_fastq_record` will produce, without producing it.
+///
+/// `@` + acc + `_` + score + `\n` + seq + `\n+\n` + qual + `\n`.
+pub fn sorted_fastq_record_len(acc: &str, score: f64, seq: &str, qual: &str) -> usize {
+    1 + acc.len() + 1 + pyfloat::repr(score).len() + 1 + seq.len() + 3 + qual.len() + 1
 }
 
 /// `logfile.txt`. Note the "median" takes the upper middle element with no
@@ -266,18 +262,32 @@ mod tests {
 
     #[test]
     fn sort_is_descending_and_stable_on_ties() {
-        let mk = |acc: &str, s: f64| Scored {
-            acc: acc.to_string(),
-            seq: String::new(),
-            qual: String::new(),
-            score: s,
-            error_rate: 0.0,
-        };
-        let mut v = vec![mk("a", 1.0), mk("b", 3.0), mk("c", 1.0), mk("d", 3.0)];
-        sort_by_score(&mut v);
-        let order: Vec<&str> = v.iter().map(|r| r.acc.as_str()).collect();
+        // (label, score) pairs, so the tie order is observable.
+        let mut v = vec![("a", 1.0f64), ("b", 3.0), ("c", 1.0), ("d", 3.0)];
+        sort_by_score(&mut v, |r| r.1);
+        let order: Vec<&str> = v.iter().map(|r| r.0).collect();
         // descending by score; ties keep input order (b before d, a before c)
         assert_eq!(order, vec!["b", "d", "a", "c"]);
+    }
+
+    /// The two-pass sort stage places records by predicted length, so a
+    /// disagreement between the formatter and the length helper would silently
+    /// corrupt `sorted.fastq`.
+    #[test]
+    fn predicted_record_length_matches_what_is_written() {
+        for (acc, score, seq, qual) in [
+            ("r1", 1.0f64, "ACGT", "IIII"),
+            ("read_2_strand=+", 123.456, "A", "!"),
+            ("x", 0.1, "", ""),
+            ("y", 1e-05, "ACGTACGTAC", "IIIIIIIIII"),
+            ("z", 1234567.0, "AC", "II"),
+        ] {
+            assert_eq!(
+                sorted_fastq_record(acc, score, seq, qual).len(),
+                sorted_fastq_record_len(acc, score, seq, qual),
+                "acc={acc} score={score}"
+            );
+        }
     }
 
     #[test]

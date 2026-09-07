@@ -177,23 +177,47 @@ fn run_sort_stage(args: &cli::Args, outfolder: &str) -> Result<Option<usize>, u8
             return Err(3);
         }
     };
-    // Streamed and scored a record at a time. Holding the file text, the parsed
-    // records and the scored copies all at once was three resident copies of the
-    // input before the sort even began; `score_record` has no state between
-    // records, so this is the same computation in the same order. See PORTING.md,
-    // "Memory: measured".
-    let mut scored: Vec<sorting::Scored> = Vec::new();
+    // Two streaming passes, keeping 32 bytes per read instead of its bases.
+    //
+    // Pass one scores every record and records where it sits in the input and how
+    // long its output line will be. The vector is then sorted by score, which
+    // fixes each surviving record's byte offset in `sorted.fastq`. Pass two
+    // streams the input again and writes each record straight to its place with
+    // `write_all_at`, so the input is read sequentially and only the output is
+    // addressed out of order.
+    //
+    // Holding `acc`, `seq` and `qual` for every read was 1.73 GB on
+    // SIRV_real_full -- and once the clustering stage's sequences were packed, it
+    // was the largest thing in the whole run. See PORTING.md, "Memory: measured".
+    struct SortRec {
+        score: f64,
+        error_rate: f64,
+        /// Index of this record in the input, so pass two can find it again.
+        ordinal: u32,
+        /// Bytes `sorted_fastq_record` will write for it.
+        out_len: u32,
+    }
+    let mut recs: Vec<SortRec> = Vec::new();
     // Finding 11: the reference crashes with `TypeError: 'NoneType' object is
     // not iterable` when a record has no quality -- which happens when the file
     // has no trailing newline. Reproduce the failure, with an explanation. The
     // reference reports the first such read, so keep the first and carry on.
     let mut no_qual: Option<String> = None;
+    let mut ordinal: u32 = 0;
     if let Err(e) = fastq::for_each_file(std::path::Path::new(&path), |r| {
+        let this = ordinal;
+        ordinal += 1;
         if r.qual.is_none() && no_qual.is_none() {
             no_qual = Some(r.name.clone());
         }
         if let Some(sc) = sorting::score_record(&r, k, args.quality_threshold) {
-            scored.push(sc);
+            let qual = r.qual.as_deref().unwrap_or("");
+            recs.push(SortRec {
+                score: sc.score,
+                error_rate: sc.error_rate,
+                ordinal: this,
+                out_len: sorting::sorted_fastq_record_len(&r.name, sc.score, &r.seq, qual) as u32,
+            });
         }
     }) {
         // The reference dies with a traceback here; a message is better and
@@ -210,13 +234,29 @@ fn run_sort_stage(args: &cli::Args, outfolder: &str) -> Result<Option<usize>, u8
         return Err(1);
     }
 
-    sorting::sort_by_score(&mut scored);
+    let nr_scored = recs.len();
+    sorting::sort_by_score(&mut recs, |r| r.score);
 
-    // Written record by record rather than concatenated into one String first,
-    // which was another whole copy of the input resident at the moment of the
-    // write.
+    // Where each surviving record lands in the output, indexed by input ordinal.
+    // `u64::MAX` marks a record the quality filter dropped.
+    let mut place: Vec<u64> = vec![u64::MAX; ordinal as usize];
+    let mut total: u64 = 0;
+    for r in &recs {
+        place[r.ordinal as usize] = total;
+        total += u64::from(r.out_len);
+    }
+    // The score has to be available again in pass two to rebuild the header, and
+    // recomputing it would mean a second compensated sum over the quality string.
+    let mut score_of_ordinal: Vec<f64> = vec![0.0; ordinal as usize];
+    for r in &recs {
+        score_of_ordinal[r.ordinal as usize] = r.score;
+    }
+    // `logfile_contents` sorts its input, so the order here does not matter.
+    let mut rates: Vec<f64> = recs.iter().map(|r| r.error_rate).collect();
+    drop(recs);
+
     {
-        use std::io::Write;
+        use std::os::unix::fs::FileExt;
         let f = match std::fs::File::create(&sorted_path) {
             Ok(f) => f,
             Err(e) => {
@@ -224,25 +264,43 @@ fn run_sort_stage(args: &cli::Args, outfolder: &str) -> Result<Option<usize>, u8
                 return Err(1);
             }
         };
-        let mut w = std::io::BufWriter::with_capacity(1 << 20, f);
-        for r in &scored {
-            if let Err(e) = w.write_all(sorting::sorted_fastq_record(r).as_bytes()) {
-                eprintln!("isONclust: cannot write sorted.fastq: {e}");
-                return Err(1);
-            }
+        if let Err(e) = f.set_len(total) {
+            eprintln!("isONclust: cannot write sorted.fastq: {e}");
+            return Err(1);
         }
-        if let Err(e) = w.flush() {
+        let mut ordinal: u32 = 0;
+        let mut failed: Option<std::io::Error> = None;
+        if let Err(e) = fastq::for_each_file(std::path::Path::new(&path), |r| {
+            let this = ordinal as usize;
+            ordinal += 1;
+            let at = place[this];
+            if at == u64::MAX || failed.is_some() {
+                return;
+            }
+            let line = sorting::sorted_fastq_record(
+                &r.name,
+                score_of_ordinal[this],
+                &r.seq,
+                r.qual.as_deref().unwrap_or(""),
+            );
+            if let Err(e) = f.write_all_at(line.as_bytes(), at) {
+                failed = Some(e);
+            }
+        }) {
+            eprintln!("isONclust: cannot re-read {path}: {e}");
+            return Err(1);
+        }
+        if let Some(e) = failed {
             eprintln!("isONclust: cannot write sorted.fastq: {e}");
             return Err(1);
         }
     }
     println!(
         "{} reads passed quality critera (avg phred Q val over {} and length > 2*k) and will be clustered.",
-        scored.len(),
+        nr_scored,
         pyfloat::repr(args.quality_threshold)
     );
 
-    let mut rates: Vec<f64> = scored.iter().map(|r| r.error_rate).collect();
     match sorting::logfile_contents(&mut rates) {
         Some(contents) => {
             if let Err(e) = std::fs::write(&log_path, contents) {
@@ -265,7 +323,7 @@ fn run_sort_stage(args: &cli::Args, outfolder: &str) -> Result<Option<usize>, u8
             return Err(1);
         }
     }
-    Ok(Some(scored.len()))
+    Ok(Some(nr_scored))
 }
 
 /// Dump `(read index, position, minimizer)` for every read, in file order.
