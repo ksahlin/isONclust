@@ -1,12 +1,18 @@
-### isONclust has been re-implemented in Rust and is 2–5x faster than the Python version, with byte-identical output.
+### isONclust has been re-implemented in Rust: 2–7x faster than the Python version on half the memory, with byte-identical output.
 
 The Rust port produces exactly the same clusters as the Python implementation —
-verified byte-for-byte across 27 parameter settings on four corpora — while
-running 1.9–5.3x faster and using less memory on five of six benchmark rows
-(72 MB against 235 MB on SIRV ONT, 402 MB against 704 MB on Drosophila, 851 MB
-against 1092 MB on SIRV PacBio, all at `--t 1`). The exception is PacBio at
-`--t 8`, where the port's resident batches cost more than the reference's
-separate processes. See
+verified byte-for-byte across 27 parameter settings on four corpora, and again on
+a full 1.3M-read corpus where all four output files match the reference's exactly.
+
+On the benchmark corpora it runs **1.9–5.1x faster** and uses less memory on five
+of six rows (44 MB against 235 MB on SIRV ONT, 336 MB against 704 MB on
+Drosophila, 779 MB against 1092 MB on SIRV PacBio, all at `--t 1`); the exception
+is PacBio at `--t 8`, where the port's resident batches cost more than the
+reference's separate processes.
+
+At transcriptome scale the gap is wider. On the full 1.3M-read SIRV corpus the
+port uses **1.68 GB against the reference's 3.55 GB and finishes in 71 s against
+491 s** — 2.1x less memory and 6.9x faster. See
 [Port-benchmark.md](Port-benchmark.md) for the full comparison, which also
 measures isONclust against [isONclust3](https://github.com/aljpetri/isONclust3)
 on accuracy, speed and memory.

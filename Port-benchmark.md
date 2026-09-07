@@ -57,59 +57,69 @@ winner on ONT than on PacBio, while the gene-level verdict is stable.
 | corpus | preset | tool | `--t` | secs | peak MB | speedup |
 |---|---|---|---|---|---|---|
 | SIRV ONT, 10k | ont | python | 1 | 4.25 | 235 | — |
-| | | **port** | 1 | **0.80** | **72** | **5.3x** |
+| | | **port** | 1 | **0.83** | **44** | **5.1x** |
 | | | python | 8 | 1.33 | 206 | — |
-| | | **port** | 8 | **0.25** | **113** | **5.3x** |
+| | | **port** | 8 | **0.26** | **87** | **5.1x** |
 | | | isONclust3 | — | 0.65 | 32 | |
 | SIRV PacBio, 17.6k | isoseq | python | 1 | 23.64 | 1092 | — |
-| | | **port** | 1 | **9.53** | **851** | **2.5x** |
+| | | **port** | 1 | **9.66** | **779** | **2.4x** |
 | | | python | 8 | 7.06 | 454 | — |
-| | | **port** | 8 | **3.68** | 697 | **1.9x** |
+| | | **port** | 8 | **3.69** | 635 | **1.9x** |
 | | | isONclust3 | — | 1.64 | 119 | |
 | Drosophila ONT, 20k | ont | python | 1 | 16.08 | 704 | — |
-| | | **port** | 1 | **6.29** | **402** | **2.6x** |
+| | | **port** | 1 | **5.70** | **336** | **2.8x** |
 | | | python | 8 | 7.46 | 826 | — |
-| | | **port** | 8 | **3.08** | **643** | **2.4x** |
+| | | **port** | 8 | **2.94** | **539** | **2.5x** |
 | | | isONclust3 | — | 1.62 | 204 | |
 
-**The port is 1.9–5.3x faster than the reference on every corpus and thread
+**The port is 1.9–5.1x faster than the reference on every corpus and thread
 count**, and uses less memory than it on five of the six rows — the exception is
-PacBio at `--t 8`, where eight resident batches still cost more than the
-reference's eight processes (697 MB against 454 MB), though that gap has closed
-from 1051 MB. Against the port's own previous release, peak RSS is down 23–43%
-on every row.
+PacBio at `--t 8`, where the port's resident batches still cost more than the
+reference's eight separate processes (635 MB against 454 MB).
 
-Those memory figures are the result of profiling rather than guesswork, and the
-guess had been wrong. A tracking allocator showed the cost was not the encoding
-of the reads but the number of copies of them: the clustering stage held the file
-text, the parsed records, a scored copy and a `SweepRead` copy simultaneously,
-and the sort stage did the same. Streaming both stages and sharing sequence and
-quality between the two structures that needed them cut the live Rust heap on
-droso_100k by 66%, from 839 MB to 283 MB.
+## At transcriptome scale, where it matters more
 
-**A large part of what remains is the C aligner.** Only 283 MB of that run's
-~1120 MB resident goes through Rust's allocator; parasail's C library mallocs its
-own matrices. Building the same run against the port's own aligner gives 579 MB
-against 1121 MB, so the C library costs 542 MB of peak RSS for its 13–16x speed.
-`--no-default-features` is therefore a real dial — half the memory, slower
-alignment, byte-identical either way — and it needs neither cmake nor libclang.
-Why it costs that much is not settled: the traceback is two bytes per cell against
-the port's one, which accounts for only about 52 MB of it. See PORTING.md.
+The rows above are 10k–20k reads, which understates the memory work: on a small
+peak the fixed costs are a large share, while the per-read copies are not. On the
+full corpora, at `--t 1`:
 
-**Both isONclust versions still use more memory than isONclust3** — 2.0x on
-Drosophila, 2.3x on SIRV ONT and 7.2x on SIRV PacBio at `--t 1`. Two further
-changes are specified but unimplemented, under *Memory: measured* in
-[PORTING.md](PORTING.md): releasing the last quality-string copy (~64 MB), and
-2-bit packing the sequences. Both figures grow with the dataset, so these
-17k–20k-read corpora do not settle what matters at transcriptome scale; a
-1M-read comparison against the reference is the measurement that would.
+| corpus | reads | tool | peak | time |
+|---|---|---|---|---|
+| SIRV real, full | 1 300 066 | python | 3.55 GB | 491 s |
+| | | **port** | **1.68 GB** | **71 s** |
+| Drosophila ONT | 1 000 000 | **port** | **2.08 GB** | **722 s** |
+| | | *port before the memory work* | *10.99 GB* | *1472 s* |
 
-Most of that speed is one change: linking parasail's C library instead of using
-the port's own exact scalar reimplementation of it. Alignment is 96–99.6% of
-runtime, and the scalar version is 13–16x slower than the C library. Before that
-change the port was *slower* than the reference on PacBio and Drosophila. Both
-paths are exact; `--no-default-features` builds the pure-Rust one, which needs no
-cmake or libclang and gives identical output more slowly.
+**2.1x less memory than the reference and 6.9x faster**, and the port's own
+starting point on this corpus was 13.46 GB and 371 s — so the memory work took it
+to **an eighth of its former footprint while making it 5x faster**. Drosophila at
+1M reads tells the same story more soberly: 10.99 GB and 1472 s down to 2.08 GB
+and 722 s.
+
+The reference was not run on Drosophila at 1M reads: it needs roughly 40 minutes
+there, and its memory behaviour is already established by the SIRV row.
+
+The speed came with the memory rather than at its expense, and that was not the
+plan: shrinking the representatives table from 1 295 814 entries to 579 turned
+main-memory lookups into cache hits. See PORTING.md, *Memory: profiled, then cut
+by 4x*.
+
+Verified at that scale, not only on the parameter sweep: `final_clusters.tsv`
+(84 MB), `final_cluster_origins.tsv`, `sorted.fastq` (1.87 GB) and `logfile.txt`
+are all byte-for-byte identical to the reference's on 1 300 066 reads.
+
+**Both isONclust versions still use more memory than isONclust3** — 1.6x on
+Drosophila, 1.4x on SIRV ONT and 6.5x on SIRV PacBio at `--t 1`, down from
+2.0–7.2x. The remaining gap on PacBio is quality strings, which the port still
+holds in full; PORTING.md has the analysis and the measured reason packing them
+is the wrong fix.
+
+**One caveat on how these were measured.** Peak RSS on this program drifts with
+position in a measurement session -- the same binary has read 3.70 GB and 4.64 GB
+on identical input. Every figure here is a median of repeated runs, and every
+before/after comparison in PORTING.md interleaves the two binaries rather than
+running one after the other. An unpaired comparison invented a 1 GB regression
+that did not exist.
 
 ## Accuracy — gene level
 
@@ -155,7 +165,8 @@ both are good.** V 0.990 against 0.981, and isONclust3 takes the ARI (0.956
 against 0.939). This is the realistic case: thousands of genes at modest depth,
 where the job is to avoid over-merging. Cluster shapes are similar (max 488
 against 526). On this evidence there is no strong quality argument between them,
-and isONclust3 is 2–5x faster again than the port.
+and isONclust3 is about 3x faster again than the port (1.62 s against 5.70 s on
+droso_20k, 225 s against 722 s at 1M reads).
 
 **On SIRV, isONclust1 wins clearly, but SIRV is an unusual clustering problem.**
 Seven genes and 10–18k reads means ~1500–2500 reads per gene, so the task is

@@ -605,30 +605,33 @@ engineering summary.
 | corpus | preset | tool | `--t` | secs | peak MB | clusters |
 | --- | --- | --- | --- | --- | --- | --- |
 | `sirv_real_10k` | ont | python | 1 | 4.25 | 235 | 36 |
-| | | **port** | 1 | **0.80** | **119** | 36 |
+| | | **port** | 1 | **0.83** | **44** | 36 |
 | | | python | 8 | 1.33 | 206 | 30 |
-| | | **port** | 8 | **0.25** | 177 | 30 |
+| | | **port** | 8 | **0.26** | **87** | 30 |
 | | | isONclust3 | — | 0.65 | 32 | 66 |
 | `sirv_pacbio` | isoseq | python | 1 | 23.64 | 1092 | 151 |
-| | | **port** | 1 | **9.53** | 1082 | 151 |
+| | | **port** | 1 | **9.66** | **779** | 151 |
 | | | python | 8 | 7.06 | 454 | 110 |
-| | | **port** | 8 | **3.68** | 1051 | 110 |
+| | | **port** | 8 | **3.69** | 635 | 110 |
 | | | isONclust3 | — | 1.64 | 119 | 163 |
 | `droso_20k` | ont | python | 1 | 16.08 | 704 | 5679 |
-| | | **port** | 1 | **6.29** | **525** | 5679 |
+| | | **port** | 1 | **5.70** | **336** | 5679 |
 | | | python | 8 | 7.46 | 826 | 5538 |
-| | | **port** | 8 | **3.08** | **740** | 5538 |
+| | | **port** | 8 | **2.94** | **539** | 5538 |
 | | | isONclust3 | — | 1.62 | 204 | 6424 |
 
-* **The port is 1.9–5.3x faster than the reference on every corpus and thread count**, at equal or
-  lower memory except `sirv_pacbio --t 8`, where eight resident batches cost more than the
-  reference's eight processes.
-* **Almost all of that came from one change**: linking parasail's C library rather than using the
-  port's own exact scalar reimplementation. Before it the port was 2.7–3.6x *slower* than the
-  reference on PacBio and Drosophila. Alignment is 96–99.6% of runtime and the scalar version is
-  13–16x slower than the library, so nothing else moved the number.
-* **isONclust3 is faster again** — 1.6–2.4x over the port — at 4–6x less memory. It is a different
-  algorithm.
+* **The port is 1.9–5.1x faster than the reference on every corpus and thread count**, at lower
+  memory except `sirv_pacbio --t 8`, where eight resident batches cost more than the reference's
+  eight processes.
+* **Two changes account for the speed.** Linking parasail's C library rather than the port's own
+  exact scalar reimplementation: before it the port was 2.7–3.6x *slower* than the reference on
+  PacBio and Drosophila, and alignment is 96–99.6% of runtime with the scalar version 13–16x slower
+  than the library. Then the memory work, which was not expected to affect runtime at all and took
+  droso_100k down 27% and SIRV_real_full 4x — see *Memory: profiled, then cut by 4x*.
+* **These corpora are 10k–20k reads and understate both.** At 1M+ reads the port is 2.1x below the
+  reference on memory and 6.9x faster; the table above is the floor, not the typical case.
+* **isONclust3 is faster again** — about 3x over the port on Drosophila — at 1.4–6.5x less memory,
+  down from 4–6x. It is a different algorithm.
 
 ### Where the port's time actually goes
 
@@ -1508,9 +1511,9 @@ Two ways to keep that property, in order of appeal:
 What is *not* worth doing on this evidence: adopting block-aligner or WFA2. They are slower than the
 exact option and change the answer.
 
-### Memory: measured, and 2-bit encoding is *not* the biggest win
+### Memory: profiled, then cut by 4x, and what the profile actually said
 
-**Yes, every read is in memory at once, and more than once.** Confirmed by reading and by measuring:
+**The reference holds every read in memory, more than once.** Confirmed by reading and by measuring:
 
 - `get_sorted_fastq_for_cluster` builds `read_array` holding `(acc, seq, qual, score)` for every
   surviving read, sorts it, and writes `sorted.fastq`.
@@ -1521,221 +1524,153 @@ exact option and change the answer.
 - In parallel mode (`--t > 1`) the batches are **pickled to worker processes**, so the peak is
   multiplied by the number of cores.
 
-#### Where the bytes actually are
+The port reproduced that structure, because reproducing it exactly is the contract. It no longer
+does, because none of the copies is observable in the output.
 
-Measured on `droso_100k` — 99 547 reads, a 136 MB fastq whose payload is 64.4 MB of sequence,
-64.4 MB of quality and 6.9 MB of accessions. Peak RSS of the port at `--t 1` is **1409 MB**, about
-10x the payload. Splitting the run with `--use_old_sorted_file` puts the peak in the **clustering**
-stage (1570 MB), not the sort (608 MB).
+#### What it cost, and what it costs now
 
-A tracking global allocator, snapshotting a histogram of live bytes by allocation size at each new
-peak, attributes the 839 MB of *live heap* at that peak as:
+Measured at `--t 1`, best of repeated runs on a quiet machine:
 
-| allocation size | live at peak | share | what it is |
-| --- | --- | --- | --- |
-| 512 B – 4 KB | **421 MB** | **50.2%** | per-read `seq` and `qual` copies (mean read 674 bp) |
-| 128 – 256 MB | **138 MB** | **16.4%** | one allocation: `read_to_string` slurping `sorted.fastq` whole |
-| 8 – 64 MB | 115 MB | 13.7% | the `Vec` backing arrays — `Vec<Record>`, `Vec<SweepRead>`, the `Vec<&str>` line index |
-| 64 – 512 B | 117 MB | 14.0% | `String`/`Vec` headers, accessions, hash-map nodes |
-
-The gap between 839 MB of live heap and 1409 MB of RSS is allocator retention — freed pages the
-system allocator has not returned.
-
-#### What that means for 2-bit packing
-
-Sequence and quality are the *same* number of bytes, so of the 421 MB in payload-sized allocations,
-about 210 MB is sequence. Packing it two bits per base takes that to ~53 MB:
-
-| change | saves | of heap peak | breaks byte-identity? |
-| --- | --- | --- | --- |
-| stop slurping `sorted.fastq`; stream it | 138 MB | 16.4% | no |
-| drop `qual` once its scalars are derived | ~210 MB | 25.0% | no |
-| 2-bit pack `seq` | ~157 MB | 18.7% | only on non-ACGT input |
-
-**2-bit packing is the smallest of the three and the only one that touches the contract.** The
-amplification is structural — copies and a whole-file slurp — not the encoding, so encoding is the
-wrong lever to pull first.
-
-The quality result is the surprise: **`qual` is not read anywhere in `cluster.rs`.** It is used to
-score reads during the sort, once per read to compute `compressed_error_rate` (stored as a single
-`f64` on `ReadInfo`), and then only again when a *representative's* record is written to the output
-fastq. So every non-representative read's quality string can be released as soon as its error rate is
-computed, and a representative's can be re-read from `sorted.fastq` at write time. That is pure
-storage with no semantic change, and it is the largest single win available.
-
-
-#### What was done, and what it actually saved
-
-Three changes landed, each verified with `bench/equivalence.sh verify` (27/27) before the next:
-
-1. **Stream `sorted.fastq` into `SweepRead` directly.** The clustering stage slurped the file into a
-   `String`, parsed that into `Vec<Record>`, copied it into `Vec<Scored>` and copied *that* into
-   `Vec<SweepRead>`. Neither intermediate was read for anything else. `fastq::for_each` is the same
-   parser with its line source made generic — the lookahead it carries between records was already
-   an owned `String`, so nothing borrowed from the file text.
-2. **Share `seq` and `qual` between `SweepRead` and `ReadInfo`** as `Arc<[u8]>` instead of cloning.
-   Every read starts as its own representative, so the clone was a second resident copy of every
-   base and quality score. Neither buffer is ever mutated, and switching to `Arc<[u8]>` made the
-   compiler prove it: `Arc<[u8]>` has no `DerefMut`, and only two construction sites needed changing.
-3. **Stream the sort stage too**, in and out. It held the file text, the records, the scored copies
-   and the whole of `sorted.fastq` as one `String`. `score_reads` became `score_record`, which has no
-   state between records.
-
-Measured on `droso_100k` at `--t 1`:
-
-| | before | after |
-| --- | --- | --- |
-| peak RSS, full run | 1409 MB | **1121 MB** |
-| peak *live heap*, full run | 839 MB | **283 MB** (−66%) |
-| peak RSS, sort stage alone | 605 MB | **172 MB** (−72%) |
-
-The prediction table above was right about the direction and wrong about one attribution. Streaming
-was worth more than the 16.4% predicted, because the slurp was only the visible part — the three
-copies downstream of it were the rest. The quality win was collected as *half* of change 2 rather
-than as a release: the duplicate copy went, the remaining one stayed, because `qual` is still needed
-positionally by `compressed_error_rate` (computed lazily, and eagerly precomputing it would change
-what a read that never reaches step 2 reports) and as a string when a representative's record is
-written out. Releasing that last copy needs a second pass over `sorted.fastq` at output time and is
-worth ~64 MB; it has not been done.
-
-Peak RSS moved much less than the heap did, and run-to-run variance on it is around 10%, so the
-full-run RSS row above is not the headline the heap row is. Why it barely moved is the next section,
-and it is the more useful result.
-
-Across the benchmark corpora, measured as the best of three runs each, peak RSS fell on every row:
-
-| corpus | preset | `--t` | before | after |
+| corpus | reads | before | after | |
 | --- | --- | --- | --- | --- |
-| sirv_real_10k | ont | 1 | 127 MB | 72 MB (−43%) |
-| sirv_real_10k | ont | 8 | 174 MB | 113 MB (−35%) |
-| sirv_pacbio | isoseq | 1 | 1114 MB | 851 MB (−23%) |
-| sirv_pacbio | isoseq | 8 | 1039 MB | 697 MB (−32%) |
-| droso_20k | ont | 1 | 535 MB | 402 MB (−24%) |
-| droso_20k | ont | 8 | 846 MB | 643 MB (−23%) |
+| SIRV_real_full | 1 300 066 | **13.46 GB** | **1.68 GB** | −87% |
+| droso_1M | 1 000 000 | 10.99 GB | **2.08 GB** | −81% |
+| droso_100k | 100 000 | 1.41 GB | **0.77 GB** | −45% |
+| sirv_real_10k | 10 000 | 127 MB | **44 MB** | −65% |
 
+For scale: SIRV_real_full's payload -- sequence plus quality as it sits on disk -- is 1.64 GB, so the
+port went from **8x the payload to roughly 1x**.
 
+**And it got faster, which was not the plan:** SIRV_real_full went from 371 s to 71 s and droso_1M
+from 1472 s to 722 s. Shrinking the representatives table from 1 295 814 entries to 579 turned
+main-memory lookups into cache hits, and the packed minimizer keys with `rustc-hash` took droso_100k's
+runtime down 27% on their own. A 5x speedup out of memory work is the kind of result that is usually a
+bug, so the output was re-verified byte-for-byte against the reference at 1.3M reads afterwards rather
+than taken on trust.
 
-#### At transcriptome scale the saving is twice what the small corpora showed
+#### How it was found: a tracking allocator, not guesswork
 
-The corpora above are 10k–20k reads, and measuring memory work on them understates it, because the
-fixed costs (parasail, hash tables) are a large share of a small peak while the per-read copies are
-not. Repeated on `droso_1M` — 1 000 000 reads, mean 694 bp, max 8339 bp, 1.29 GB of sequence plus
-quality — at `--t 1`:
+An earlier version of this section asserted that 2-bit packing was "the obvious win". That was wrong,
+and the way it was wrong is the lesson: it reasoned from the *shape* of the data structures instead of
+measuring them.
 
-| | peak RSS | time |
+A global allocator that snapshots live bytes by allocation size at each new peak, plus explicit
+per-structure accounting, attributed SIRV_real_full's pre-sweep peak exactly:
+
+| component | MB | what it is |
 | --- | --- | --- |
-| port, before the three changes | **10.99 GB** | 1472 s |
-| port, after | **4.79 GB** | 1501 s |
-| isONclust3 (all 16 cores, `--mode ont --seeding minimizer --post-cluster`) | 2.98 GB | 225 s |
+| `seq`, raw ASCII | **865.3** | 876 851 436 bases, one byte each |
+| `qual`, raw ASCII | **865.3** | phred characters |
+| `reps` table | **194.0** | 1 295 814 entries in 2 097 152 slots x 97 B |
+| accessions | 129.1 | one `Arc<str>` per read |
+| `Vec<SweepRead>` | 89.0 | 1 295 814 x 72 B |
+| `OrderedClusters` table | 66.0 | 1 295 814 entries |
+| member `Vec<Arc<str>>` | 19.8 | one per read before merging |
+| `order` | 9.9 | |
+| minimizer database | 0.0 | grows to 0.7 MB by the end |
+| **accounted** | **2238.3** | of 4695 MB RSS |
 
-**−56% peak RSS, 2.29x less, for +2% time** — which is inside run-to-run noise. Against the 23–43%
-on the small corpora, this is roughly double, and it is the figure that matters for real runs.
-Amplification over payload falls from about 10x at droso_100k to **3.7x** here.
+Two facts fell out that no amount of reading would have given:
 
-It also changes the standing against isONclust3: the gap on this corpus is **1.61x** on memory,
-against the 2.6–9.1x measured on the 17k–20k corpora. The runtime gap (6.7x) is not a like-for-like
-comparison — isONclust3 used all 16 cores and the port ran single-threaded, and `--t > 1` is a
-different algorithm here rather than a parallelisation (Finding 3), so there is no thread count at
-which the two compute the same thing.
+- **`reps` finishes with 579 entries.** It is sized for every read and keeps 0.04% of them. Same for
+  `OrderedClusters`. 260 MB of the peak was scaffolding for entries that get discarded.
+- **The minimizer database is 1.3 MB here and 82 MB on droso_100k**, because it is keyed by
+  *representatives'* minimizers and SIRV forms 579 clusters against droso's 84 318. The two corpora
+  rank the work in opposite orders, and neither alone would have said so.
 
-#### Why the runtime is what it is
+#### The changes, in the order they landed
 
-The port is 1.9–5.3x the reference on every corpus, but its absolute runtime grows faster than the
-read count:
+Each was gated on `bench/equivalence.sh verify` (27/27) before the next.
 
-| droso, `--ont --t 1` | reads | time | |
-| --- | --- | --- | --- |
-| droso_20k | 20 000 | 6.29 s | |
-| droso_100k | 100 000 | ~70 s | 5x reads, 11.1x time — exponent **1.50** |
-| droso_1M | 1 000 000 | 1501 s | 10x reads, 21.4x time — exponent **1.33** |
+1. **Stream `sorted.fastq` into `SweepRead` directly.** The clustering stage held the file text, a
+   `Vec<Record>`, a `Vec<Scored>` and a `Vec<SweepRead>` -- four copies of every base and quality
+   score, two of them never read for anything else.
+2. **Share `seq` and `qual`** between `SweepRead` and `ReadInfo` as `Arc<[u8]>` rather than cloning.
+   Neither buffer is ever mutated, and `Arc<[u8]>` has no `DerefMut`, so the compiler proved it.
+3. **Stream the sort stage**, in and out; it had been accumulating the whole of `sorted.fastq` as one
+   `String`.
+4. **Share accessions** as `Arc<str>` -- they were held three times -- and size `Vec<SweepRead>` from
+   the sort stage's own count instead of doubling to 1.3M entries.
+5. **Pack the minimizer database's keys** into a `u64`. 148 B/entry for 26 B of information became
+   about 50. Exact, not hashed: a 32-bit hash collides across the 580k keys droso_100k reaches, and a
+   collision merges two k-mers' representative lists. A leading sentinel bit keeps the encoding
+   injective across lengths, which matters because `get_kmer_minimizers` emits minimizers *shorter*
+   than k (Finding 4) -- without it `"AA"` and `"AAAA"` both pack to zero. `1 + 2k <= 64` gives
+   k <= 31, and every k the tool can run is 4..=30. **`rustc-hash`** for the integer-keyed maps: this
+   is looked up ~100 times per read, and SipHash's strength buys nothing on a `u64`.
+6. **2-bit pack the sequences.** 865 -> 229 MB. `AlignSource` had to change shape -- a packed
+   sequence cannot hand back a borrow -- so `seq_qual()` became `seq_into(&mut Vec<u8>)`; `blockalign`
+   keeps two reusable buffers and the sweep one, so packing costs no per-read allocation.
+7. **Build `reps` and `OrderedClusters` lazily**, creating a read's entry when the sweep first sees it
+   and removing it the moment the read maps, instead of collecting merges and replaying them after
+   the loop. 1 295 814 entries became 579.
+8. **Hold read ids, not accessions, in member lists** (`Vec<u32>`), recovering the accession by
+   indexing the sorted read array.
+9. **Sort by score without holding the reads.** Two streaming passes: score and note each record's
+   input ordinal and output length; sort, which fixes every offset; then stream again and
+   `write_all_at` each record into place. **2.111 -> 0.074 GB for the stage, 28x**, at 2.7x its time
+   (+10 s on a 280 s run). Both passes read sequentially and only the output is placed out of order --
+   sorting offsets and *reading* at random would have risked cold-disk seeks instead.
 
-That is the reference algorithm's shape, reproduced exactly, not a port artefact. The sweep is
-greedy and sequential: each read is compared against the representatives built *so far*, so as the
-corpus grows both the number of clusters and each read's candidate hit list grow, and the number of
-alignments grows faster than the number of reads. Alignment is already 96–99.6% of runtime. It is
-also why `--t > 1` cannot be a parallelisation — the loop's state depends on every prior iteration.
+#### The one deliberate divergence
 
-**Still to measure: the Python reference at this scale.** It was left out because it is the slowest
-and least informative hour available — its peak on droso_100k was 1476 MB against a 136 MB payload,
-about 11x, so ~14 GB is the expectation here, and the port-against-port delta is the number that
-guides further work.
+**Change 6 breaks byte-identity on non-ACGT input.** Two bits cannot hold a fifth symbol, so `N`,
+lowercase and IUPAC codes are read as `A`. That is observable in two places: `get_kmer_minimizers`
+picks minimizers by lexicographic order on the k-mer string and `'N'` (78) sorts between `'G'` (71)
+and `'T'` (84), so an `N` changes which k-mer wins a window; and parasail's matrix is built for
+`"ACGT"`, scoring anything else as 0 rather than as a match, which changes the alignment path.
 
-#### The C aligner costs 542 MB of peak RSS, and it is not clear why
+Every corpus in `bench/corpora.tsv` is pure ACGT -- checked, zero non-ACGT bases -- so **the
+equivalence harness structurally cannot see this divergence.** That is *Finding 5*'s lesson, and it is
+why `PackedSeq::from_bytes` counts substitutions and the loader prints a warning naming the file to
+read. An earlier design kept a sparse table of exception positions to stay exact; it was dropped as
+deliberate scope, on the grounds that ONT and PacBio basecalls are ACGT.
 
-The three changes cut the live Rust heap by 66% and peak RSS by much less. Part of that gap is
-straightforward: **only 283 MB of the ~1120 MB resident goes through Rust's allocator at all.**
-parasail's C library allocates its own matrices with `posix_memalign`, so the tracking allocator
-above cannot see them. Building the same run against each aligner, on `droso_100k` at `--t 1`:
+Everything else on this list is storage-only and byte-identical, verified 27/27 at each step and,
+separately, byte-for-byte against the Python reference on all four output files at 1.3M reads --
+`final_clusters.tsv` (84 MB), `final_cluster_origins.tsv`, `sorted.fastq` (1.87 GB) and `logfile.txt`.
 
-| build | peak RSS |
-| --- | --- |
-| `--features parasail-ffi` (default) — parasail's C library | **1121 MB** |
-| `--no-default-features` — the port's own scalar parasail | **579 MB** |
+#### Measuring this at all was harder than changing it
 
-So the C library costs **542 MB of peak RSS** for its 13–16x speed. Both are exact; this is a real
-speed/memory dial, and `--no-default-features` also needs neither cmake nor libclang to build.
+Peak RSS here is not a stable function of the code. Three traps, all of which produced a wrong
+conclusion before being caught:
 
-**What is not established is the mechanism.** The obvious candidate does not account for it.
-`sg_trace_scan_16` allocates its traceback as `size*a*b` where `a = ceil(n/8)` segments, `b = m`
-and `size = sizeof(vec128i) = 16` (`memory.c:243`), which is **two bytes per cell**; the port's
-reimplementation packs the same four traceback bits into **one** (`packed: vec![0u8; n * m]`).
-droso_100k's longest read is 7228 bp, so even the worst single pair is 104 MB against 52 MB — a
-52 MB difference, not 542 MB.
+- **It drifts with position in a measurement session.** The same binary read 3.95 GB and 4.83 GB, and
+  3.702 GB and 4.696 GB, depending only on when in a script the run happened. A two-run A-then-B
+  comparison cannot resolve anything smaller than that drift. **Interleave A/B/A/B and report per-pair
+  deltas.** An unpaired comparison invented a 0.99 GB "regression" in change 5 that does not exist.
+- **A script that names a binary by path measures whatever is at that path when it runs.** Rebuilding
+  during a comparison silently changes the thing being compared. **Copy the binaries to fixed paths
+  first.**
+- **Live heap and RSS are different questions.** Only 283 MB of a 1050 MB RSS went through Rust's
+  allocator at one point, because parasail's C library `malloc`s its own matrices. A heap profiler
+  cannot see them, and a `time -l` figure cannot separate them.
 
-The likely remainder is allocation churn rather than any single live allocation: every call
-memaligns a large table sized to that pair and frees it, and thousands of differently-sized large
-blocks passing through the system allocator leave RSS at a high-water mark that the live-bytes
-figure never reaches. That is a hypothesis, not a measurement. Testing it means either counting
-parasail's own allocations (interpose `malloc`, or patch `parasail_memalign`) or trying a single
-reused buffer and seeing whether the peak moves.
+A real effect looks like the sort-stage measurement above: 2.111/2.110 against 0.074/0.073, agreeing
+to three digits across interleaved pairs.
 
-#### Bounding the traceback: what it would mean, and what it would cost
+#### What is left, and what is not worth doing
 
-If the traceback allocation does turn out to matter, there are four ways to bound it, and they are
-not equally available under the byte-identity contract:
-
-| approach | memory | exact? |
-| --- | --- | --- |
-| **band** the DP to a diagonal window of width `w` | O(n·w) | **No** — if the optimal path leaves the band the alignment changes |
-| **route long pairs to the port's own aligner** | halves the traceback | **Yes** — both reproduce `sg_trace_scan_16`; costs 13–16x on those pairs only |
-| **reuse one buffer** across calls, sized to the largest pair | no lower peak, no churn | **Yes** — pure allocation change |
-| **linear-space traceback** (Hirschberg) | O(n+m) | **Only if the tie-breaking is reproduced** |
-
-Banding is the standard answer and is unavailable here: it changes results on exactly the divergent
-pairs this stage exists to judge. Routing long pairs to the scalar path is the cheap safe win.
-Hirschberg is the big win and the hard one — it recovers *an* optimal path, and this port already had
-to reverse-engineer which of the tied optimal paths parasail returns (see `TieBreak` in
-`parasail.rs`), so a divide-and-conquer traceback would have to reproduce that too.
-
-#### Peak RSS does scale with the dataset, so read storage still matters
-
-An earlier draft of this section claimed the peak was set by one alignment of the longest read pair.
-That is wrong, and the numbers already in this file refute it: droso_20k to droso_100k is 5x the
-reads and takes peak RSS from 402 MB to 1121 MB. A per-alignment cost would be constant in the
-number of reads. The traceback is O(max_read_len²) and the read store is O(n_reads), so which one
-dominates depends on scale — and the corpora above are small enough that the answer measured on them
-does not transfer to a real run.
-
-#### On 2-bit packing, when it comes
-
-- **It breaks the byte-identity contract on any dataset containing `N` or another non-ACGT
-  character**, if those are mapped to a pseudo-random nucleotide. This is not hypothetical: `N` is
-  observable in at least two places. `get_kmer_minimizers` picks minimizers by **lexicographic order
-  on the k-mer string**, and `'N'` (ASCII 78) sorts between `'G'` (71) and `'T'` (84) — so an `N`
-  changes which k-mer wins a window. And parasail's matrix is built for `"ACGT"`, scoring anything
-  else as 0 rather than as a match, which changes the alignment path.
-- **Every corpus in `bench/corpora.tsv` is pure ACGT** — checked, zero non-ACGT bases in the smoke
-  fixture, `sirv_real_10k`, `droso_20k` and `sirv_pacbio` — so the change would be *measurably*
-  lossless on everything currently tested. That is a reason to be careful rather than reassured: it
-  means the test suite cannot see the divergence, which is *Finding 5*'s lesson again. A corpus with
-  `N`s has to be built before this lands.
-- **A sparse exception table keeps it exact:** 2-bit plus a side-table of non-ACGT positions. `N` is
-  rare in ONT and PacBio output, so the table costs almost nothing and the contract holds on every
-  input, not just ACGT-only ones. Prefer that unless measurement says the indirection is expensive.
-
-Order of work: stream the sorted file; release quality strings after the error rate is derived;
-build an `N`-containing corpus; then pack sequences behind an exception table. Measure each
-separately — the table above is the prediction, and each step should be checked against it.
+- **The heap-to-RSS gap is still the largest single term and is not explained.** 2.66 GB on
+  SIRV_real_full, 0.85 GB on droso_100k. It scales with read count rather than read length, which
+  argues against any single large parasail traceback and for allocator retention proportional to
+  allocation churn. `get_all_hits` allocating a fresh `Hits` map per read -- 1.3M times -- is the
+  obvious suspect and has not been tested.
+- **The C aligner costs 542 MB of peak RSS** for its 13-16x speed (1121 MB against 579 MB with
+  `--no-default-features`, on droso_100k). The mechanism is not established: parasail's traceback is
+  two bytes per cell against the port's one, which accounts for only ~52 MB of it.
+- **Releasing the last quality copy** is worth ~865 MB on SIRV_real_full and is the largest remaining
+  in-heap item. `qual` is never read in `cluster.rs`: it scores reads during the sort, yields one
+  `f64` per read via `compressed_error_rate`, and is otherwise needed only to write a representative's
+  own record out -- which a second pass over `sorted.fastq` would supply.
+- **Packing quality is the wrong lever.** Measured alphabets: 48 distinct characters on SIRV ONT, 65
+  on Drosophila ONT, 1 on SIRV PacBio CCS. Real ONT needs 6-7 bits, so packing buys 12-25% against
+  100% for releasing it.
+- **Bounding parasail's traceback**, if it turns out to matter: banding is unavailable under the
+  contract, because it changes results on exactly the divergent pairs this stage exists to judge.
+  Routing long pairs to the port's own 1-byte-per-cell aligner is exact and halves the traceback.
+  Hirschberg is the big win and the hard one -- it recovers *an* optimal path, and this port already
+  had to reverse-engineer which of the tied optimal paths parasail returns.
 
 ### Performance and structure, once exact
 
