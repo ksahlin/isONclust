@@ -10,6 +10,7 @@ mod cluster;
 mod fastq;
 mod minimizers;
 mod p_emp;
+mod packed;
 mod parallelize;
 mod parasail;
 #[cfg(feature = "parasail-ffi")]
@@ -557,13 +558,20 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
         Some(n) => Vec::with_capacity(n),
         None => Vec::new(),
     };
+    // Counted so a divergence cannot happen silently: 2-bit packing turns any
+    // non-ACGT base into an `A`, which changes minimizer selection and the
+    // alignment path. Every corpus here is pure ACGT, so this stays zero and the
+    // harness cannot see the divergence -- Finding 5 again, hence the report.
+    let mut substituted = 0usize;
     if let Err(e) = fastq::for_each_file(&sorted_path, |r| {
         let score = score_of(&r.name);
+        let (seq, sub) = packed::PackedSeq::from_bytes(r.seq.as_bytes());
+        substituted += sub;
         sweep_reads.push(sweep::SweepRead {
             id: sweep_reads.len(),
             prev_batch_index: 0,
             acc: r.name.into(),
-            seq: r.seq.into_bytes().into(),
+            seq,
             qual: r.qual.unwrap_or_default().into_bytes().into(),
             score,
         });
@@ -574,6 +582,13 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
 
     // Captured before the sweep consumes the reads; this is `reads.len()` as it
     // was when the two intermediate vectors still existed.
+    if substituted > 0 {
+        eprintln!(
+            "isONclust: warning: {substituted} non-ACGT bases were read as 'A'. Sequences are\n\
+             2-bit packed, which cannot represent a fifth symbol, so output for this input\n\
+             will NOT match the Python reference. See rust/src/packed.rs."
+        );
+    }
     let nr_reads = sweep_reads.len();
 
     let params = sweep::SweepParams {
@@ -636,24 +651,13 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
             ),
         )
     } else {
-        let mut clusters = sweep::OrderedClusters::default();
-        let mut reps: rustc_hash::FxHashMap<usize, sweep::ReadInfo> =
-            rustc_hash::FxHashMap::default();
-        for x in &sweep_reads {
-            clusters.insert(x.id, vec![x.acc.clone()]);
-            reps.insert(
-                x.id,
-                sweep::ReadInfo {
-                    id: x.id,
-                    batch_index: x.prev_batch_index,
-                    acc: x.acc.clone(),
-                    seq: x.seq.clone(),
-                    qual: x.qual.clone(),
-                    score: x.score,
-                    error_rate: None,
-                },
-            );
-        }
+        // Left empty: `reads_to_clusters` creates each read's own cluster and
+        // representative when it first sees the read, and removes them again as
+        // soon as the read maps. Pre-populating meant building a 1.3M-entry
+        // table and 1.3M single-element Vecs, then discarding 99.6% of them.
+        let clusters = sweep::OrderedClusters::default();
+        let reps: rustc_hash::FxHashMap<usize, sweep::ReadInfo> = rustc_hash::FxHashMap::default();
+
         let res = sweep::reads_to_clusters(
             clusters,
             reps,
@@ -699,19 +703,29 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
             "{}\t{}\t{}\t{}\t{}\t{}\n",
             output_cl_id,
             strip_score(&rep.acc),
-            String::from_utf8_lossy(&rep.seq),
+            String::from_utf8_lossy(&rep.seq.to_bytes()),
             String::from_utf8_lossy(&rep.qual),
             pyfloat::repr(rep.score),
             pyfloat::repr(rep.error_rate.unwrap_or(f64::NAN)),
         ));
-        let mut members: Vec<&std::sync::Arc<str>> = clusters.map[c_id].iter().collect();
+        // Members are read ids; the accession and its score come from the
+        // sorted read array. `SweepRead::score` was itself set by `score_of` on
+        // the same accession at load, so this is the identical f64 the reference
+        // parses back out, and the sort is unchanged. It is deliberately NOT
+        // total -- ties keep member-list order, which is ascending read id.
+        let mut members: Vec<u32> = clusters.map[c_id].clone();
         members.sort_by(|a, b| {
-            score_of(b)
-                .partial_cmp(&score_of(a))
-                .expect("scores parse from the accession")
+            sweep_reads[*b as usize]
+                .score
+                .partial_cmp(&sweep_reads[*a as usize].score)
+                .expect("scores are finite")
         });
-        for acc in &members {
-            clusters_out.push_str(&format!("{}\t{}\n", output_cl_id, strip_score(acc)));
+        for id in &members {
+            clusters_out.push_str(&format!(
+                "{}\t{}\n",
+                output_cl_id,
+                strip_score(&sweep_reads[*id as usize].acc)
+            ));
         }
         if clusters.map[c_id].len() > 1 {
             nontrivial += 1;

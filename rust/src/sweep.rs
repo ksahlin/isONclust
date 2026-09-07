@@ -36,7 +36,7 @@ use rustc_hash::FxHashMap;
 pub struct SweepRead {
     pub id: usize,
     pub prev_batch_index: i64,
-    /// Shared, like `seq` and `qual` below: the accession is held by this read,
+    /// Shared, like `qual` below: the accession is held by this read,
     /// by its `ReadInfo`, and again in the cluster's member list, so cloning the
     /// `String` meant three resident copies of every accession.
     pub acc: std::sync::Arc<str>,
@@ -45,7 +45,8 @@ pub struct SweepRead {
     /// resident copy of every base and quality score -- 129 MB of droso_100k's
     /// heap peak. `Arc` keeps the existing ownership structure, which matters
     /// because `ReadInfo` is moved between passes in parallel mode.
-    pub seq: std::sync::Arc<[u8]>,
+    /// 2-bit packed; see `packed`. Shared with this read's `ReadInfo`.
+    pub seq: crate::packed::PackedSeq,
     pub qual: std::sync::Arc<[u8]>,
     pub score: f64,
 }
@@ -59,27 +60,37 @@ pub struct ReadInfo {
     /// Shared with the read's `SweepRead`; see the note there.
     pub acc: std::sync::Arc<str>,
     /// Shared with the read's `SweepRead`; see the note there.
-    pub seq: std::sync::Arc<[u8]>,
+    pub seq: crate::packed::PackedSeq,
     pub qual: std::sync::Arc<[u8]>,
     pub score: f64,
     pub error_rate: Option<f64>,
 }
 
-/// An insertion-ordered map, because the reference's dicts are and the order
-/// reaches the output through the stable sort in `main`.
+/// An insertion-ordered map, because the reference's dicts are.
+///
+/// `order` is load-bearing, but not in `main`: that sort is total -- `(size,
+/// score, cluster id)` -- so insertion order cannot reach the final output.
+/// The consumer is `parallelize::render_intermediate`, which sorts by cluster
+/// size *only* with a stable `sort_by`, so insertion order breaks its ties and
+/// reaches `pre_clusters.csv` and `cluster_origins.csv`.
+///
+/// Members are **read ids**, not accessions. The accession is recovered by
+/// indexing the sorted read array, which is how the reference's own output loop
+/// finds it too; holding one `Arc<str>` per member cost 20 MB of pointers on
+/// SIRV_real_full where 5 MB of `u32` does.
 #[derive(Default, Clone)]
 pub struct OrderedClusters {
     pub order: Vec<usize>,
-    pub map: FxHashMap<usize, Vec<std::sync::Arc<str>>>,
+    pub map: FxHashMap<usize, Vec<u32>>,
 }
 
 impl OrderedClusters {
-    pub fn insert(&mut self, id: usize, accs: Vec<std::sync::Arc<str>>) {
-        if self.map.insert(id, accs).is_none() {
+    pub fn insert(&mut self, id: usize, members: Vec<u32>) {
+        if self.map.insert(id, members).is_none() {
             self.order.push(id);
         }
     }
-    pub fn remove(&mut self, id: usize) -> Option<Vec<std::sync::Arc<str>>> {
+    pub fn remove(&mut self, id: usize) -> Option<Vec<u32>> {
         let v = self.map.remove(&id);
         if v.is_some() {
             self.order.retain(|x| *x != id);
@@ -95,7 +106,7 @@ impl OrderedClusters {
     pub fn is_empty(&self) -> bool {
         self.order.is_empty()
     }
-    pub fn iter(&self) -> impl Iterator<Item = (usize, &Vec<std::sync::Arc<str>>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (usize, &Vec<u32>)> {
         self.order.iter().map(move |i| (*i, &self.map[i]))
     }
 }
@@ -108,9 +119,14 @@ impl OrderedClusters {
 struct RepSeqs<'a>(&'a FxHashMap<usize, ReadInfo>);
 
 impl blockalign::AlignSource for RepSeqs<'_> {
-    fn seq_qual(&self, id: usize) -> (&[u8], &[u8]) {
-        let x = &self.0[&id];
-        (&x.seq, &x.qual)
+    fn seq_into(&self, id: usize, out: &mut Vec<u8>) {
+        self.0[&id].seq.unpack_into(out);
+    }
+    fn seq_len(&self, id: usize) -> usize {
+        self.0[&id].seq.len()
+    }
+    fn qual(&self, id: usize) -> &[u8] {
+        &self.0[&id].qual
     }
     fn acc(&self, id: usize) -> &str {
         &self.0[&id].acc
@@ -274,7 +290,12 @@ pub fn reads_to_clusters(
         .unwrap_or(0)
         .max(1);
 
-    let mut assignment: Vec<(usize, usize)> = Vec::new();
+    // Which reads have been merged away, kept only for the one-level-deep
+    // invariant the reference relies on. Debug builds check it; release builds
+    // still need the set, so it stays.
+    let mut merged: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // One unpacking buffer for the whole sweep; see `packed`.
+    let mut seq_buf: Vec<u8> = Vec::new();
     let mut out_mapped = 0usize;
     let mut out_aln_passed = 0usize;
     let mut out_aln_called = 0usize;
@@ -297,6 +318,34 @@ pub fn reads_to_clusters(
     for r in sorted_reads {
         let read_cl_id = r.id;
 
+        // Every read starts as its own representative, as the reference's
+        // initialisation does -- but created here, on first sight, rather than
+        // pre-populated for the whole corpus before the sweep. A read that maps
+        // is removed again immediately below, so the two maps hold roughly the
+        // surviving clusters instead of every read: on SIRV_real_full that is
+        // 579 entries rather than 1 295 814, which is 260 MB of table and
+        // per-read Vec that used to be built and then thrown away.
+        //
+        // It has to happen before the early exits, not after: a read skipped for
+        // being too short still reaches the output as its own cluster, so it
+        // needs its entry even though it is never processed.
+        //
+        // `or_insert_with` also means a caller that pre-populates (parallelize,
+        // and later passes carrying representatives forward) is unaffected, and
+        // that a carried-over `error_rate` is never overwritten.
+        reps.entry(read_cl_id).or_insert_with(|| ReadInfo {
+            id: r.id,
+            batch_index: r.prev_batch_index,
+            acc: r.acc.clone(),
+            seq: r.seq.clone(),
+            qual: r.qual.clone(),
+            score: r.score,
+            error_rate: None,
+        });
+        if !clusters.map.contains_key(&read_cl_id) {
+            clusters.insert(read_cl_id, vec![read_cl_id as u32]);
+        }
+
         if r.prev_batch_index == lowest_batch_index {
             if let Some(info) = reps.get_mut(&read_cl_id) {
                 info.batch_index = new_batch_index;
@@ -305,7 +354,11 @@ pub fn reads_to_clusters(
         }
 
         // 1. compress and take minimizers
-        let hpol = crate::sorting::homopolymer_compress(&r.seq);
+        //
+        // Unpacked into a buffer reused across every read, so packing the
+        // sequences costs no per-read allocation here.
+        r.seq.unpack_into(&mut seq_buf);
+        let hpol = crate::sorting::homopolymer_compress(&seq_buf);
         if hpol.len() < p.k {
             skipped_short += 1;
             continue;
@@ -321,7 +374,7 @@ pub fn reads_to_clusters(
                 info.batch_index = new_batch_index;
             } else {
                 info.batch_index = new_batch_index;
-                info.error_rate = timed!(error_rate, compressed_error_rate(&r.seq, &r.qual));
+                info.error_rate = timed!(error_rate, compressed_error_rate(&seq_buf, &r.qual));
             }
         }
 
@@ -372,7 +425,29 @@ pub fn reads_to_clusters(
         // 6. assign, or become a representative
         let best = m.best_cluster_id.max(a_id);
         if best >= 0 {
-            assignment.push((read_cl_id, best as usize));
+            // Applied now rather than collected and replayed after the loop.
+            // Safe because nothing inside this loop reads cluster membership or
+            // size -- only `hpol.len()` and `ms.len()` -- and because a merge
+            // target is always a representative while representatives are never
+            // merge sources, so a read removed here can never be needed again:
+            // candidates come from the minimizer database, which only ever holds
+            // representatives. The order targets receive members in is the loop
+            // order either way, so the member lists are unchanged.
+            let target = best as usize;
+            debug_assert!(
+                !merged.contains(&target),
+                "merge target {target} is itself merged; the reference assumes this cannot happen"
+            );
+            merged.insert(read_cl_id);
+            let moved = clusters
+                .remove(read_cl_id)
+                .expect("a source is merged once");
+            clusters
+                .map
+                .get_mut(&target)
+                .expect("a target is never merged away")
+                .extend(moved);
+            reps.remove(&read_cl_id);
         } else {
             timed!(db_insert, {
                 for (mn, _) in &ms {
@@ -380,27 +455,6 @@ pub fn reads_to_clusters(
                 }
             });
         }
-    }
-
-    // 7. reassign. One level deep: a merge target is always a representative and
-    //    representatives are never merge sources.
-    let sources: std::collections::HashSet<usize> = assignment.iter().map(|(r, _)| *r).collect();
-    for (_, target) in &assignment {
-        debug_assert!(
-            !sources.contains(target),
-            "merge target {target} is itself merged; the reference assumes this cannot happen"
-        );
-    }
-    for (read_cl_id, target) in assignment {
-        let moved = clusters
-            .remove(read_cl_id)
-            .expect("a source is merged once");
-        clusters
-            .map
-            .get_mut(&target)
-            .expect("a target is never merged away")
-            .extend(moved);
-        reps.remove(&read_cl_id);
     }
 
     SweepResult {
@@ -447,11 +501,11 @@ mod tests {
     fn ordered_clusters_keeps_insertion_order_through_removals() {
         let mut c = OrderedClusters::default();
         for i in 0..5 {
-            c.insert(i, vec![format!("r{i}").into()]);
+            c.insert(i, vec![i as u32]);
         }
         c.remove(2);
         assert_eq!(c.order, vec![0, 1, 3, 4]);
-        c.insert(9, vec!["r9".into()]);
+        c.insert(9, vec![9u32]);
         assert_eq!(c.order, vec![0, 1, 3, 4, 9]);
     }
 }

@@ -172,7 +172,13 @@ pub fn expected_errors(qual: &[u8]) -> f64 {
 /// `min_fraction` walk. The first candidate whose aligned fraction reaches
 /// `--aligned_threshold` wins.
 pub trait AlignSource {
-    fn seq_qual(&self, id: usize) -> (&[u8], &[u8]);
+    /// Unpack a sequence into `out`. Sequences are 2-bit packed, so this cannot
+    /// hand back a borrow; callers reuse one buffer per role instead of
+    /// allocating per candidate. See `packed`.
+    fn seq_into(&self, id: usize, out: &mut Vec<u8>);
+    /// The base count, without unpacking.
+    fn seq_len(&self, id: usize) -> usize;
+    fn qual(&self, id: usize) -> &[u8];
     fn acc(&self, id: usize) -> &str;
 }
 
@@ -211,7 +217,12 @@ pub fn get_best_cluster_block_align(
         kb.cmp(&ka)
     });
 
-    let (seq, r_qual) = src.seq_qual(read_cl_id);
+    // Two buffers, reused: the read's sequence is unpacked once, the candidate's
+    // once per candidate tried.
+    let mut seq: Vec<u8> = Vec::new();
+    let mut c_seq: Vec<u8> = Vec::new();
+    src.seq_into(read_cl_id, &mut seq);
+    let r_qual = src.qual(read_cl_id);
     let top_hits = hits.by_cluster[&top_matches[0]].positions.len();
     // The reference recomputes this inside the candidate loop, once per
     // candidate, from the same unchanging quality string. Hoisting it is
@@ -223,11 +234,12 @@ pub fn get_best_cluster_block_align(
         if nm_hits < top_hits {
             break;
         }
-        let (c_seq, c_qual) = src.seq_qual(cl_id);
-        let error_rate_sum = read_errors + expected_errors(c_qual) / c_seq.len() as f64;
+        src.seq_into(cl_id, &mut c_seq);
+        let error_rate_sum =
+            read_errors + expected_errors(src.qual(cl_id)) / src.seq_len(cl_id) as f64;
         let open = gap_opening_penalty(error_rate_sum);
         let match_id = match_id_tailored(error_rate_sum, k);
-        let block = parasail_block_alignment(seq, c_seq, k, match_id, open);
+        let block = parasail_block_alignment(&seq, &c_seq, k, match_id, open);
         // The ratio leaks out of the loop in the reference, so keep the last
         // one tried even when nothing matches.
         result.alignment_ratio = block.alignment_ratio;

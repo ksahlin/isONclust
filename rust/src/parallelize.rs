@@ -153,7 +153,7 @@ pub fn parallel_clustering(
         let mut c = OrderedClusters::default();
         let mut r = FxHashMap::default();
         for x in batch {
-            c.insert(x.id, vec![x.acc.clone()]);
+            c.insert(x.id, vec![x.id as u32]);
             r.insert(
                 x.id,
                 ReadInfo {
@@ -289,7 +289,7 @@ pub fn parallel_clustering(
             return out;
         }
         out.intermediates
-            .push(render_intermediate(&all_clusters, &all_reps));
+            .push(render_intermediate(&all_clusters, &all_reps, read_array));
 
         it += 1;
         let _ = it;
@@ -338,6 +338,7 @@ pub fn parallel_clustering(
 fn render_intermediate(
     clusters: &OrderedClusters,
     reps: &FxHashMap<usize, ReadInfo>,
+    reads: &[SweepRead],
 ) -> (String, String) {
     let mut order: Vec<usize> = clusters.order.clone();
     order.sort_by(|a, b| clusters.map[b].len().cmp(&clusters.map[a].len()));
@@ -345,8 +346,12 @@ fn render_intermediate(
     let mut pre = String::new();
     let mut origins = String::new();
     for c_id in &order {
-        for acc in &clusters.map[c_id] {
-            pre.push_str(&format!("{}\t{}\n", c_id, crate::strip_score(acc)));
+        for id in &clusters.map[c_id] {
+            pre.push_str(&format!(
+                "{}\t{}\n",
+                c_id,
+                crate::strip_score(&reads[*id as usize].acc)
+            ));
         }
     }
     for c_id in &order {
@@ -355,7 +360,7 @@ fn render_intermediate(
             "{}\t{}\t{}\t{}\t{}\t{}\n",
             r.id,
             r.acc,
-            String::from_utf8_lossy(&r.seq),
+            String::from_utf8_lossy(&r.seq.to_bytes()),
             String::from_utf8_lossy(&r.qual),
             crate::pyfloat::repr(r.score),
             crate::pyfloat::repr(r.error_rate.unwrap_or(f64::NAN)),
@@ -373,7 +378,7 @@ mod tests {
             id,
             prev_batch_index: b,
             acc: format!("r{id}_{score}").into(),
-            seq: vec![b'A'; len].into(),
+            seq: crate::packed::PackedSeq::from_bytes(&vec![b'A'; len]).0,
             qual: vec![b'I'; len].into(),
             score,
         }
