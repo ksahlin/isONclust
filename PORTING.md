@@ -1614,36 +1614,61 @@ Across the benchmark corpora, measured as the best of three runs each, peak RSS 
 | droso_20k | ont | 8 | 846 MB | 643 MB (−23%) |
 
 
-#### After all that, peak RSS is set by parasail, not by the reads
+#### The C aligner costs 542 MB of peak RSS, and it is not clear why
 
-The three changes cut the live Rust heap by 66% and peak RSS by far less. That gap is the finding:
-**only 283 MB of the ~1050 MB resident goes through Rust's allocator at all.** parasail's C library
-allocates its own matrices with `malloc`, so the tracking allocator above cannot see them.
-
-Building both aligners and measuring the same run settles it, on `droso_100k` at `--t 1`:
+The three changes cut the live Rust heap by 66% and peak RSS by much less. Part of that gap is
+straightforward: **only 283 MB of the ~1120 MB resident goes through Rust's allocator at all.**
+parasail's C library allocates its own matrices with `posix_memalign`, so the tracking allocator
+above cannot see them. Building the same run against each aligner, on `droso_100k` at `--t 1`:
 
 | build | peak RSS |
 | --- | --- |
 | `--features parasail-ffi` (default) — parasail's C library | **1121 MB** |
 | `--no-default-features` — the port's own scalar parasail | **579 MB** |
 
-parasail C costs **542 MB of peak RSS**, and the reason is in the traceback representation.
-`sg_trace_scan_16` stores four bytes per cell; the port's reimplementation packs the same four
-traceback bits into **one byte per cell** (`packed: vec![0u8; n * m]`, see `parasail.rs`).
-droso_100k's longest read is 7228 bp, so a single alignment of two such reads is 199 MB of
-traceback in the C library against 50 MB in the port, before either one's score buffers.
+So the C library costs **542 MB of peak RSS** for its 13–16x speed. Both are exact; this is a real
+speed/memory dial, and `--no-default-features` also needs neither cmake nor libclang to build.
 
-So the port has a real speed/memory dial, and both ends of it are exact:
+**What is not established is the mechanism.** The obvious candidate does not account for it.
+`sg_trace_scan_16` allocates its traceback as `size*a*b` where `a = ceil(n/8)` segments, `b = m`
+and `size = sizeof(vec128i) = 16` (`memory.c:243`), which is **two bytes per cell**; the port's
+reimplementation packs the same four traceback bits into **one** (`packed: vec![0u8; n * m]`).
+droso_100k's longest read is 7228 bp, so even the worst single pair is 104 MB against 52 MB — a
+52 MB difference, not 542 MB.
 
-- **default**: 13–16x faster alignment, ~2x the peak RSS.
-- **`--no-default-features`**: half the memory, and needs neither cmake nor libclang to build.
+The likely remainder is allocation churn rather than any single live allocation: every call
+memaligns a large table sized to that pair and frees it, and thousands of differently-sized large
+blocks passing through the system allocator leave RSS at a high-water mark that the live-bytes
+figure never reaches. That is a hypothesis, not a measurement. Testing it means either counting
+parasail's own allocations (interpose `malloc`, or patch `parasail_memalign`) or trying a single
+reused buffer and seeing whether the peak moves.
 
-This also caps what any further work on read storage can achieve. With the C aligner, 2-bit packing
-would remove ~40 MB of a 1121 MB peak — under 4% — because the peak is one alignment of the longest
-read pair, not the reads in store. Against `--no-default-features` it is worth more. **Anyone
-optimising this further should attack the traceback allocation first**: bounding it, banding it, or
-reusing one buffer across calls would move peak RSS more than every change described above put
-together.
+#### Bounding the traceback: what it would mean, and what it would cost
+
+If the traceback allocation does turn out to matter, there are four ways to bound it, and they are
+not equally available under the byte-identity contract:
+
+| approach | memory | exact? |
+| --- | --- | --- |
+| **band** the DP to a diagonal window of width `w` | O(n·w) | **No** — if the optimal path leaves the band the alignment changes |
+| **route long pairs to the port's own aligner** | halves the traceback | **Yes** — both reproduce `sg_trace_scan_16`; costs 13–16x on those pairs only |
+| **reuse one buffer** across calls, sized to the largest pair | no lower peak, no churn | **Yes** — pure allocation change |
+| **linear-space traceback** (Hirschberg) | O(n+m) | **Only if the tie-breaking is reproduced** |
+
+Banding is the standard answer and is unavailable here: it changes results on exactly the divergent
+pairs this stage exists to judge. Routing long pairs to the scalar path is the cheap safe win.
+Hirschberg is the big win and the hard one — it recovers *an* optimal path, and this port already had
+to reverse-engineer which of the tied optimal paths parasail returns (see `TieBreak` in
+`parasail.rs`), so a divide-and-conquer traceback would have to reproduce that too.
+
+#### Peak RSS does scale with the dataset, so read storage still matters
+
+An earlier draft of this section claimed the peak was set by one alignment of the longest read pair.
+That is wrong, and the numbers already in this file refute it: droso_20k to droso_100k is 5x the
+reads and takes peak RSS from 402 MB to 1121 MB. A per-alignment cost would be constant in the
+number of reads. The traceback is O(max_read_len²) and the read store is O(n_reads), so which one
+dominates depends on scale — and the corpora above are small enough that the answer measured on them
+does not transfer to a real run.
 
 #### On 2-bit packing, when it comes
 

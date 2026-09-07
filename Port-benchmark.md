@@ -87,22 +87,22 @@ and the sort stage did the same. Streaming both stages and sharing sequence and
 quality between the two structures that needed them cut the live Rust heap on
 droso_100k by 66%, from 839 MB to 283 MB.
 
-**Peak RSS, though, is now set by parasail rather than by the reads.** Only
-283 MB of that run's ~1050 MB resident goes through Rust's allocator; the rest is
-the C library, which mallocs its own matrices. Building the same run against the
-port's own aligner gives 579 MB against 1121 MB — parasail C costs 542 MB,
-because `sg_trace_scan_16` stores four bytes of traceback per cell where the
-port's reimplementation packs the same information into one. So
-`--no-default-features` is a real dial: half the memory, 13–16x slower
-alignment, and byte-identical either way.
+**A large part of what remains is the C aligner.** Only 283 MB of that run's
+~1120 MB resident goes through Rust's allocator; parasail's C library mallocs its
+own matrices. Building the same run against the port's own aligner gives 579 MB
+against 1121 MB, so the C library costs 542 MB of peak RSS for its 13–16x speed.
+`--no-default-features` is therefore a real dial — half the memory, slower
+alignment, byte-identical either way — and it needs neither cmake nor libclang.
+Why it costs that much is not settled: the traceback is two bytes per cell against
+the port's one, which accounts for only about 52 MB of it. See PORTING.md.
 
 **Both isONclust versions still use more memory than isONclust3** — 2.0x on
 Drosophila, 2.3x on SIRV ONT and 7.2x on SIRV PacBio at `--t 1`. Two further
 changes are specified but unimplemented, under *Memory: measured* in
 [PORTING.md](PORTING.md): releasing the last quality-string copy (~64 MB), and
-2-bit packing the sequences. Note that against the default build 2-bit packing
-would remove under 4% of peak, since the peak is one alignment of the longest
-read pair; bounding parasail's traceback allocation would move it far more.
+2-bit packing the sequences. Both figures grow with the dataset, so these
+17k–20k-read corpora do not settle what matters at transcriptome scale; a
+1M-read comparison against the reference is the measurement that would.
 
 Most of that speed is one change: linking parasail's C library instead of using
 the port's own exact scalar reimplementation of it. Alignment is 96–99.6% of
