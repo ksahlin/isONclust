@@ -36,6 +36,17 @@ parasail-ffi = ["dep:libparasail-sys"]
 
 [dependencies]
 libparasail-sys = { version = "0.2", optional = true }
+# Hashing for the hot integer-keyed maps. The minimizer database is looked up
+# once per minimizer per read -- around 100 times per read -- with a u64 key, and
+# SipHash's strength buys nothing there while costing measurably. Same choice, and
+# same version, as the isONform port made for the same structure.
+#
+# Safe with respect to the byte-identity contract only because nothing depends on
+# these maps' iteration order: the database and the hit lists are lookup-only,
+# `OrderedClusters::iter` walks its own `order` vector, and the one place that
+# does iterate a map into a vector (`parallelize`'s survivors) sorts it by
+# (score, id), which is total.
+rustc-hash = "2.1.3"
 # Two candidate replacements for the exact scalar parasail port, which is 15x
 # slower than the C library and is what makes this port slower than the
 # reference on ONT data. Both are carried across from isONform with their

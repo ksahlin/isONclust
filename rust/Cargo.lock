@@ -123,6 +123,7 @@ dependencies = [
  "biodiff-wfa2-sys",
  "block-aligner",
  "libparasail-sys",
+ "rustc-hash",
 ]
 
 [[package]]

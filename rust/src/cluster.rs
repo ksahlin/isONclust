@@ -20,6 +20,7 @@
 //! * **The first candidate over the threshold wins**, and the walk stops early
 //!   at `nm_hits < min_fraction * top_hits`.
 
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 
 /// What `get_best_cluster` needs from a representative.
@@ -44,62 +45,105 @@ pub trait Representatives {
 /// that is safe only because the ranking key is total, and
 /// `assert_unique_accessions` is what keeps that true.
 ///
-/// The `Vec<u8>` key is wasteful and could be packed: every distinct k-mer costs
-/// 24 bytes of inline `Vec` header plus a separate heap allocation for 13 bytes
-/// of sequence, and every value costs the same again for what is usually a single
-/// id. A k-mer of `k <= 32` fits in a `u64` at two bits per base, which removes
-/// the key's allocation entirely -- and unlike packing the reads, that is safe
-/// with respect to minimizer *selection*, because the map needs only equality
-/// while `get_kmer_minimizers` does its lexicographic comparison on the sequence
-/// itself. The non-ACGT caveat is the same one.
+/// # Representation
 ///
-/// How much this is worth is NOT yet measured at the scale where it would matter.
-/// On droso_100k the per-entry heap allocations come to at most ~65 MB of a
-/// 283 MB live heap, and droso_20k emits 101 minimizers per read for 489k
-/// distinct 13-mers, so the count grows sub-linearly as k-mer space saturates.
-/// Measure before optimising; see PORTING.md, "Memory: measured".
+/// Keys are **2-bit packed into a `u64`** rather than stored as the k-mer bytes.
+/// Profiled on droso_100k this structure was 82 MB of a 261 MB live heap --
+/// 148 bytes per entry for 26 bytes of information -- because a `Vec<u8>` key
+/// costs 24 bytes inline plus a heap allocation for 13 bytes, and a `Vec<usize>`
+/// value costs 24 inline plus a 32-byte allocation (`Vec`'s first push reserves
+/// capacity 4) for what is usually a single id.
+///
+/// Packing is exact, not a hash: a 32-bit hash would collide across the ~580k
+/// keys droso_100k already reaches, and a collision merges two k-mers' lists and
+/// changes the answer. The map only needs *equality*, while
+/// `get_kmer_minimizers` does its lexicographic comparison on the sequence
+/// itself, so minimizer selection is untouched by the encoding.
+///
+/// The leading `1` bit is load-bearing. `get_kmer_minimizers` can emit
+/// minimizers **shorter than k** (Finding 4), so lengths differ, and without the
+/// sentinel `"AA"` and `"AAAA"` would both pack to zero. Starting the accumulator
+/// at 1 makes the encoding injective across lengths, and costs one bit: `1 + 2k`
+/// bits must fit in 64, so `k <= 31`. Every `k` the tool can run is 4..=30,
+/// because `p_emp::Table::select` has no table outside that range.
+///
+/// Anything that does not pack -- a non-ACGT base, or a minimizer longer than 31
+/// -- goes in `wide`, keyed by the bytes exactly as before. `N` is rare in ONT
+/// and PacBio output, so that map stays near-empty in practice, and keeping it
+/// means the encoding costs no exactness on any input.
 #[derive(Default)]
 pub struct MinimizerDatabase {
-    map: HashMap<Vec<u8>, Vec<usize>>,
+    /// Packed k-mer -> representative ids. `u32` ids: these are indices into the
+    /// sorted read array, so they cannot reach 2^32.
+    map: FxHashMap<u64, Vec<u32>>,
+    /// The exact fallback for k-mers that do not pack. Normally empty.
+    wide: FxHashMap<Vec<u8>, Vec<u32>>,
 }
 
-#[allow(dead_code)]
+/// 2-bit pack a k-mer, or `None` if it contains a non-ACGT byte or is too long.
+///
+/// Case-sensitive on purpose: the reference keys its dict by the k-mer string, so
+/// `a` and `A` are different keys there and must stay different here. Lowercase
+/// input therefore takes the `wide` path rather than being folded.
+#[inline]
+fn pack(kmer: &[u8]) -> Option<u64> {
+    if kmer.len() > 31 {
+        return None;
+    }
+    let mut acc: u64 = 1;
+    for &b in kmer {
+        let code = match b {
+            b'A' => 0,
+            b'C' => 1,
+            b'G' => 2,
+            b'T' => 3,
+            _ => return None,
+        };
+        acc = (acc << 2) | code;
+    }
+    Some(acc)
+}
+
 impl MinimizerDatabase {
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
-        self.map.len()
+        self.map.len() + self.wide.len()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
+        self.map.is_empty() && self.wide.is_empty()
     }
 
     /// `minimizer_database[m].add(read_cl_id)`.
     pub fn add(&mut self, kmer: &[u8], cl_id: usize) {
-        let e = self.map.entry(kmer.to_vec()).or_default();
-        if !e.contains(&cl_id) {
-            e.push(cl_id);
+        let id = cl_id as u32;
+        let e = match pack(kmer) {
+            Some(k) => self.map.entry(k).or_default(),
+            None => self.wide.entry(kmer.to_vec()).or_default(),
+        };
+        if !e.contains(&id) {
+            e.push(id);
         }
     }
 
-    fn get(&self, kmer: &[u8]) -> Option<&Vec<usize>> {
-        self.map.get(kmer)
+    fn get(&self, kmer: &[u8]) -> Option<&[u32]> {
+        match pack(kmer) {
+            Some(k) => self.map.get(&k).map(|v| v.as_slice()),
+            None => self.wide.get(kmer).map(|v| v.as_slice()),
+        }
     }
 }
 
-/// The three parallel structures `get_all_hits` returns, keyed by cluster id.
-///
-/// The reference keeps `hit_clusters_ids` (a count) alongside the two lists, but
-/// the count is always the list length, and it is only ever used for a
-/// truthiness test. One map suffices.
 #[derive(Debug, Default)]
 pub struct Hits {
     /// Insertion-ordered, mirroring the reference's `defaultdict`.
     pub order: Vec<usize>,
-    pub by_cluster: HashMap<usize, HitList>,
+    pub by_cluster: FxHashMap<usize, HitList>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -126,7 +170,10 @@ pub fn get_all_hits(
     let mut hits = Hits::default();
     for (i, (m, pos)) in minimizers.iter().enumerate() {
         if let Some(cluster_ids) = db.get(m) {
-            for &cl_id in cluster_ids {
+            for &id in cluster_ids {
+                // The database stores u32 ids to halve its value storage; the
+                // hit lists and everything downstream stay usize.
+                let cl_id = id as usize;
                 let entry = hits.by_cluster.entry(cl_id).or_insert_with(|| {
                     hits.order.push(cl_id);
                     HitList::default()
@@ -294,6 +341,65 @@ pub fn assert_unique_accessions(reps: &HashMap<usize, String>) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
+
+    /// The sentinel bit exists for this: `get_kmer_minimizers` can emit
+    /// minimizers shorter than k (Finding 4), so different lengths reach the
+    /// database, and a plain 2-bit packing maps "AA" and "AAAA" both to zero.
+    #[test]
+    fn packing_separates_kmers_of_different_lengths() {
+        assert_ne!(pack(b"AA"), pack(b"AAAA"));
+        assert_ne!(pack(b"A"), pack(b"AA"));
+        assert_ne!(pack(b""), pack(b"A"));
+        // and it is still injective within a length
+        let mut seen = std::collections::HashSet::new();
+        for a in *b"ACGT" {
+            for b in *b"ACGT" {
+                for c in *b"ACGT" {
+                    assert!(seen.insert(pack(&[a, b, c]).expect("packs")));
+                }
+            }
+        }
+        assert_eq!(seen.len(), 64);
+    }
+
+    /// `1 + 2k` bits must fit in a u64. Every k the tool can run is 4..=30, so
+    /// the boundary is only reachable by a caller bypassing `p_emp::Table`.
+    #[test]
+    fn packing_gives_up_past_31_bases() {
+        assert!(pack(&[b'A'; 31]).is_some());
+        assert!(pack(&[b'A'; 32]).is_none());
+    }
+
+    /// Non-ACGT must not be folded onto a base: the reference keys its dict by
+    /// the k-mer string, so `N` is its own key and `a` differs from `A`.
+    #[test]
+    fn non_acgt_and_lowercase_take_the_exact_fallback() {
+        assert!(pack(b"ACGN").is_none());
+        assert!(pack(b"acgt").is_none());
+
+        let mut db = MinimizerDatabase::new();
+        db.add(b"ACGN", 1);
+        db.add(b"ACGT", 2);
+        db.add(b"acgt", 3);
+        assert_eq!(db.get(b"ACGN"), Some(&[1u32][..]));
+        assert_eq!(db.get(b"ACGT"), Some(&[2u32][..]));
+        assert_eq!(db.get(b"acgt"), Some(&[3u32][..]));
+        assert_eq!(db.len(), 3);
+        // a 32-base k-mer of pure ACGT also lands in the fallback, and is found
+        let long = vec![b'C'; 32];
+        db.add(&long, 4);
+        assert_eq!(db.get(&long), Some(&[4u32][..]));
+    }
+
+    /// Packed and fallback entries must not be reachable through each other.
+    #[test]
+    fn packed_and_fallback_keys_do_not_alias() {
+        let mut db = MinimizerDatabase::new();
+        db.add(b"ACGT", 7);
+        assert_eq!(db.get(b"acgt"), None);
+        assert_eq!(db.get(b"ACGN"), None);
+        assert_eq!(db.get(b"ACG"), None);
+    }
     use super::*;
 
     struct TestReps(HashMap<usize, (String, f64)>);

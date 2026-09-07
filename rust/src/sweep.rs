@@ -28,7 +28,7 @@
 use crate::blockalign;
 use crate::cluster::{self, MinimizerDatabase, Representatives};
 use crate::minimizers;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 /// A read as the sweep sees it: the reference's
 /// `(read_cl_id, prev_batch_index, acc, seq, qual, score)`.
@@ -70,7 +70,7 @@ pub struct ReadInfo {
 #[derive(Default, Clone)]
 pub struct OrderedClusters {
     pub order: Vec<usize>,
-    pub map: HashMap<usize, Vec<std::sync::Arc<str>>>,
+    pub map: FxHashMap<usize, Vec<std::sync::Arc<str>>>,
 }
 
 impl OrderedClusters {
@@ -105,7 +105,7 @@ impl OrderedClusters {
 /// The previous version cloned each candidate's full sequence *and* quality
 /// string per comparison -- roughly 12 KB per candidate on Drosophila reads, for
 /// data that is only read.
-struct RepSeqs<'a>(&'a HashMap<usize, ReadInfo>);
+struct RepSeqs<'a>(&'a FxHashMap<usize, ReadInfo>);
 
 impl blockalign::AlignSource for RepSeqs<'_> {
     fn seq_qual(&self, id: usize) -> (&[u8], &[u8]) {
@@ -121,7 +121,7 @@ impl blockalign::AlignSource for RepSeqs<'_> {
 ///
 /// This replaced a per-read `HashMap<usize, Representative>` that cloned every
 /// candidate's accession. Behaviour-neutral: both fields are read-only.
-struct RepMap<'a>(&'a HashMap<usize, ReadInfo>);
+struct RepMap<'a>(&'a FxHashMap<usize, ReadInfo>);
 
 impl Representatives for RepMap<'_> {
     fn acc(&self, id: usize) -> &str {
@@ -205,7 +205,7 @@ impl StageTimes {
 /// `{new_batch_index: (clusters, representatives, minimizer_database, new_batch_index)}`.
 pub struct SweepResult {
     pub clusters: OrderedClusters,
-    pub representatives: HashMap<usize, ReadInfo>,
+    pub representatives: FxHashMap<usize, ReadInfo>,
     pub db: MinimizerDatabase,
     pub batch_index: i64,
     pub mapped_passed: usize,
@@ -257,7 +257,7 @@ pub fn compressed_error_rate(seq: &[u8], qual: &[u8]) -> Option<f64> {
 /// minimizer_database, new_batch_index, args)`.
 pub fn reads_to_clusters(
     mut clusters: OrderedClusters,
-    mut reps: HashMap<usize, ReadInfo>,
+    mut reps: FxHashMap<usize, ReadInfo>,
     sorted_reads: &[SweepRead],
     mut db: MinimizerDatabase,
     new_batch_index: i64,

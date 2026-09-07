@@ -16,6 +16,7 @@
 //! is behaviour-neutral.
 
 use crate::sweep::{self, OrderedClusters, ReadInfo, SweepParams, SweepRead};
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 
 /// `batch_list`'s three real modes.
@@ -120,7 +121,7 @@ pub fn batch_list_merge_consecutive(reads: &[SweepRead]) -> Vec<Vec<SweepRead>> 
 /// What a completed round hands back.
 pub struct ParallelResult {
     pub clusters: OrderedClusters,
-    pub representatives: HashMap<usize, ReadInfo>,
+    pub representatives: FxHashMap<usize, ReadInfo>,
     /// One entry per merge iteration, in order: `(pre_clusters, cluster_origins)`.
     pub intermediates: Vec<(String, String)>,
     pub mapped_passed: usize,
@@ -146,11 +147,11 @@ pub fn parallel_clustering(
 
     // Per batch: its own cluster map, representative map and (empty) database.
     let mut cluster_batches: Vec<OrderedClusters> = Vec::new();
-    let mut rep_batches: Vec<HashMap<usize, ReadInfo>> = Vec::new();
+    let mut rep_batches: Vec<FxHashMap<usize, ReadInfo>> = Vec::new();
     let mut db_batches: Vec<crate::cluster::MinimizerDatabase> = Vec::new();
     for batch in &read_batches {
         let mut c = OrderedClusters::default();
-        let mut r = HashMap::new();
+        let mut r = FxHashMap::default();
         for x in batch {
             c.insert(x.id, vec![x.acc.clone()]);
             r.insert(
@@ -173,7 +174,7 @@ pub fn parallel_clustering(
 
     let mut out = ParallelResult {
         clusters: OrderedClusters::default(),
-        representatives: HashMap::new(),
+        representatives: FxHashMap::default(),
         intermediates: Vec::new(),
         mapped_passed: 0,
         aln_passed: 0,
@@ -249,7 +250,7 @@ pub fn parallel_clustering(
 
         // merge_dicts: later dicts win, but the batches are disjoint by read id.
         let mut all_clusters = OrderedClusters::default();
-        let mut all_reps: HashMap<usize, ReadInfo> = HashMap::new();
+        let mut all_reps: FxHashMap<usize, ReadInfo> = FxHashMap::default();
         let mut dbs: HashMap<i64, crate::cluster::MinimizerDatabase> = HashMap::new();
         for res in results {
             for (id, accs) in res.clusters.iter() {
@@ -307,7 +308,7 @@ pub fn parallel_clustering(
         db_batches.clear();
         for batch in &read_batches {
             let mut c = OrderedClusters::default();
-            let mut r = HashMap::new();
+            let mut r = FxHashMap::default();
             let lowest = batch
                 .iter()
                 .map(|x| x.prev_batch_index)
@@ -336,7 +337,7 @@ pub fn parallel_clustering(
 /// `final_cluster_origins.tsv`, which strips it.
 fn render_intermediate(
     clusters: &OrderedClusters,
-    reps: &HashMap<usize, ReadInfo>,
+    reps: &FxHashMap<usize, ReadInfo>,
 ) -> (String, String) {
     let mut order: Vec<usize> = clusters.order.clone();
     order.sort_by(|a, b| clusters.map[b].len().cmp(&clusters.map[a].len()));

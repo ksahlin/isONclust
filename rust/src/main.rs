@@ -637,8 +637,8 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
         )
     } else {
         let mut clusters = sweep::OrderedClusters::default();
-        let mut reps: std::collections::HashMap<usize, sweep::ReadInfo> =
-            std::collections::HashMap::new();
+        let mut reps: rustc_hash::FxHashMap<usize, sweep::ReadInfo> =
+            rustc_hash::FxHashMap::default();
         for x in &sweep_reads {
             clusters.insert(x.id, vec![x.acc.clone()]);
             reps.insert(
