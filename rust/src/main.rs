@@ -142,11 +142,17 @@ fn run(args: cli::Args) -> ExitCode {
         return ExitCode::from(3);
     }
 
-    ExitCode::from(run_sort_stage(&args, &outfolder))
+    ExitCode::from(match run_sort_stage(&args, &outfolder) {
+        Ok(_) => 0,
+        Err(code) => code,
+    })
 }
 
 /// The sorting stage. Returns a process exit code; 0 on success.
-fn run_sort_stage(args: &cli::Args, outfolder: &str) -> u8 {
+/// Returns the number of reads written to `sorted.fastq`, so the clustering
+/// stage can size its vector exactly instead of growing it by doubling.
+/// `Ok(None)` means an existing sorted file was reused, so the count is unknown.
+fn run_sort_stage(args: &cli::Args, outfolder: &str) -> Result<Option<usize>, u8> {
     let k = args.k as usize;
     let sorted_path = std::path::Path::new(&outfolder).join("sorted.fastq");
     let log_path = std::path::Path::new(&outfolder).join("logfile.txt");
@@ -156,18 +162,18 @@ fn run_sort_stage(args: &cli::Args, outfolder: &str) -> u8 {
     // leaves it empty (PORTING.md, Finding 8).
     if let Err(e) = std::fs::write(&log_path, "") {
         eprintln!("isONclust: cannot write logfile: {e}");
-        return 1;
+        return Err(1);
     }
     if args.use_old_sorted_file && sorted_path.exists() {
         println!("Using already existing sorted file in specified directory, in not intended, specify different outfolder or delete the current file.");
-        return 0;
+        return Ok(None);
     }
 
     let path = match (&args.fastq, &args.flnc, &args.ccs) {
         (Some(f), _, _) => f.clone(),
         _ => {
             eprintln!("isONclust: the --ccs/--flnc BAM path is not ported (PORTING.md, Scope)");
-            return 3;
+            return Err(3);
         }
     };
     // Streamed and scored a record at a time. Holding the file text, the parsed
@@ -192,7 +198,7 @@ fn run_sort_stage(args: &cli::Args, outfolder: &str) -> u8 {
         // The reference dies with a traceback here; a message is better and
         // this path is not in the byte-identity contract.
         eprintln!("isONclust: cannot read {path}: {e}");
-        return 1;
+        return Err(1);
     }
     if let Some(name) = no_qual {
         eprintln!(
@@ -200,7 +206,7 @@ fn run_sort_stage(args: &cli::Args, outfolder: &str) -> u8 {
         );
         eprintln!("TypeError: 'NoneType' object is not iterable. The usual cause is a fastq");
         eprintln!("with no trailing newline on its last line. See PORTING.md, Finding 11.");
-        return 1;
+        return Err(1);
     }
 
     sorting::sort_by_score(&mut scored);
@@ -214,19 +220,19 @@ fn run_sort_stage(args: &cli::Args, outfolder: &str) -> u8 {
             Ok(f) => f,
             Err(e) => {
                 eprintln!("isONclust: cannot write sorted.fastq: {e}");
-                return 1;
+                return Err(1);
             }
         };
         let mut w = std::io::BufWriter::with_capacity(1 << 20, f);
         for r in &scored {
             if let Err(e) = w.write_all(sorting::sorted_fastq_record(r).as_bytes()) {
                 eprintln!("isONclust: cannot write sorted.fastq: {e}");
-                return 1;
+                return Err(1);
             }
         }
         if let Err(e) = w.flush() {
             eprintln!("isONclust: cannot write sorted.fastq: {e}");
-            return 1;
+            return Err(1);
         }
     }
     println!(
@@ -240,7 +246,7 @@ fn run_sort_stage(args: &cli::Args, outfolder: &str) -> u8 {
         Some(contents) => {
             if let Err(e) = std::fs::write(&log_path, contents) {
                 eprintln!("isONclust: cannot write logfile: {e}");
-                return 1;
+                return Err(1);
             }
         }
         None => {
@@ -255,10 +261,10 @@ fn run_sort_stage(args: &cli::Args, outfolder: &str) -> u8 {
                 pyfloat::repr(args.quality_threshold)
             );
             eprintln!("Lower --q, or check that the input has quality values.");
-            return 1;
+            return Err(1);
         }
     }
-    0
+    Ok(Some(scored.len()))
 }
 
 /// Dump `(read index, position, minimizer)` for every read, in file order.
@@ -529,10 +535,10 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
     };
 
     // --- the sorting stage, as ISONCLUST_STAGE=sort does it ---
-    let rc = run_sort_stage(args, outfolder);
-    if rc != 0 {
-        return ExitCode::from(rc);
-    }
+    let sorted_count = match run_sort_stage(args, outfolder) {
+        Ok(n) => n,
+        Err(code) => return ExitCode::from(code),
+    };
     let sorted_path = std::path::Path::new(outfolder).join("sorted.fastq");
     // The reference re-reads sorted.fastq rather than reusing the in-memory
     // array, and the score is recovered from the accession. Reproduced, because
@@ -543,13 +549,20 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
     // `Vec<SweepRead>` -- four resident copies of every base and quality score,
     // where one will do. The two intermediates were never read for anything
     // else. See PORTING.md, "Memory: measured".
-    let mut sweep_reads: Vec<sweep::SweepRead> = Vec::new();
+    // Sized from the sort stage's own count, so the vector never reallocates:
+    // growing 1.3M entries by doubling has the old and the new buffer live at
+    // once at each step. `None` is the --use_old_sorted_file path, where no
+    // count was produced.
+    let mut sweep_reads: Vec<sweep::SweepRead> = match sorted_count {
+        Some(n) => Vec::with_capacity(n),
+        None => Vec::new(),
+    };
     if let Err(e) = fastq::for_each_file(&sorted_path, |r| {
         let score = score_of(&r.name);
         sweep_reads.push(sweep::SweepRead {
             id: sweep_reads.len(),
             prev_batch_index: 0,
-            acc: r.name,
+            acc: r.name.into(),
             seq: r.seq.into_bytes().into(),
             qual: r.qual.unwrap_or_default().into_bytes().into(),
             score,
@@ -691,7 +704,7 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
             pyfloat::repr(rep.score),
             pyfloat::repr(rep.error_rate.unwrap_or(f64::NAN)),
         ));
-        let mut members: Vec<&String> = clusters.map[c_id].iter().collect();
+        let mut members: Vec<&std::sync::Arc<str>> = clusters.map[c_id].iter().collect();
         members.sort_by(|a, b| {
             score_of(b)
                 .partial_cmp(&score_of(a))

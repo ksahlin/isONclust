@@ -371,7 +371,7 @@ mod tests {
         SweepRead {
             id,
             prev_batch_index: b,
-            acc: format!("r{id}_{score}"),
+            acc: format!("r{id}_{score}").into(),
             seq: vec![b'A'; len].into(),
             qual: vec![b'I'; len].into(),
             score,

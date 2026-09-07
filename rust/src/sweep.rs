@@ -36,7 +36,10 @@ use std::collections::HashMap;
 pub struct SweepRead {
     pub id: usize,
     pub prev_batch_index: i64,
-    pub acc: String,
+    /// Shared, like `seq` and `qual` below: the accession is held by this read,
+    /// by its `ReadInfo`, and again in the cluster's member list, so cloning the
+    /// `String` meant three resident copies of every accession.
+    pub acc: std::sync::Arc<str>,
     /// Shared with the `ReadInfo` for the same read rather than cloned into it.
     /// Every read starts as its own representative, so cloning meant a second
     /// resident copy of every base and quality score -- 129 MB of droso_100k's
@@ -53,7 +56,8 @@ pub struct SweepRead {
 pub struct ReadInfo {
     pub id: usize,
     pub batch_index: i64,
-    pub acc: String,
+    /// Shared with the read's `SweepRead`; see the note there.
+    pub acc: std::sync::Arc<str>,
     /// Shared with the read's `SweepRead`; see the note there.
     pub seq: std::sync::Arc<[u8]>,
     pub qual: std::sync::Arc<[u8]>,
@@ -66,16 +70,16 @@ pub struct ReadInfo {
 #[derive(Default, Clone)]
 pub struct OrderedClusters {
     pub order: Vec<usize>,
-    pub map: HashMap<usize, Vec<String>>,
+    pub map: HashMap<usize, Vec<std::sync::Arc<str>>>,
 }
 
 impl OrderedClusters {
-    pub fn insert(&mut self, id: usize, accs: Vec<String>) {
+    pub fn insert(&mut self, id: usize, accs: Vec<std::sync::Arc<str>>) {
         if self.map.insert(id, accs).is_none() {
             self.order.push(id);
         }
     }
-    pub fn remove(&mut self, id: usize) -> Option<Vec<String>> {
+    pub fn remove(&mut self, id: usize) -> Option<Vec<std::sync::Arc<str>>> {
         let v = self.map.remove(&id);
         if v.is_some() {
             self.order.retain(|x| *x != id);
@@ -91,7 +95,7 @@ impl OrderedClusters {
     pub fn is_empty(&self) -> bool {
         self.order.is_empty()
     }
-    pub fn iter(&self) -> impl Iterator<Item = (usize, &Vec<String>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (usize, &Vec<std::sync::Arc<str>>)> {
         self.order.iter().map(move |i| (*i, &self.map[i]))
     }
 }
@@ -443,7 +447,7 @@ mod tests {
     fn ordered_clusters_keeps_insertion_order_through_removals() {
         let mut c = OrderedClusters::default();
         for i in 0..5 {
-            c.insert(i, vec![format!("r{i}")]);
+            c.insert(i, vec![format!("r{i}").into()]);
         }
         c.remove(2);
         assert_eq!(c.order, vec![0, 1, 3, 4]);
