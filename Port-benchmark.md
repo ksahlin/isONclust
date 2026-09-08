@@ -47,26 +47,42 @@ gene of the primary hit.
 
 ## Speed and memory
 
-| corpus | reads | clusters | tool | peak RSS | time |
-|---|---|---|---|---|---|
-| SIRV real, full | 1 300 066 | 579 | python | 3.55 GB | 491 s |
-| | | | isONclust3 | 2.49 GB | 243 s |
-| | | | **port `--t 1`** | **0.74 GB** | **73 s** |
-| | | | **port `--t 8`** | **1.34 GB** | **40 s** |
-| Drosophila ONT | 1 000 000 | 84 318 
-| | | | isONclust3 | 2.98 GB | 233 s |
-| | | | **port `--t 1`** | **1.40 GB** | **726 s** |
-| | | | **port `--t 8`** | **2.95 GB** | **205 s** |
-| SIRV PacBio | 17 633 | 151 | isONclust3 | 0.12 GB | 1.7 s |
-| | | | **port `--t 1`** | **0.75 GB** | **9.8 s** |
-| | | | **port `--t 8`** | **0.60 GB** | **3.9 s** |
+Clustering **plus** `write_fastq --N 1`, which is the usual workflow; isONclust3
+writes its per-cluster fastq in the same run. Peak RSS is the larger of the two
+steps, time is their sum. Single-threaded except where `--t 8` is shown.
 
-The Python implementation was not run on Drosophila at 1M reads (takes too long).
+| corpus | tool | clusters | peak RSS | time |
+|---|---|---|---|---|
+| SIRV real, full, 1 300 066 reads | python | 579 | 3.57 GB | 495 s |
+| | isONclust3 | 56 | 3.44 GB | 252 s |
+| | **port `--t 1`** | 579 | **0.76 GB** | **76 s** |
+| Drosophila ONT, 1 000 000 reads | isONclust3 | 42 710 | 4.53 GB | 259 s |
+| | **port `--t 1`** | 84 318 | **1.34 GB** | **622 s** |
+| Drosophila ONT, 20 000 reads | python | 5 679 | 0.70 GB | 19 s |
+| | isONclust3 | 6 424 | 0.20 GB | 4.8 s |
+| | **port `--t 1`** | 5 679 | **0.33 GB** | **7.9 s** |
+| SIRV PacBio, 17 633 reads | python | 151 | 1.05 GB | 24 s |
+| | isONclust3 | 163 | 0.19 GB | 1.7 s |
+| | **port `--t 1`** | 151 | **0.75 GB** | **9.9 s** |
+| SIRV ONT, 10 000 reads | python | 36 | 0.19 GB | 4.4 s |
+| | isONclust3 | 66 | 0.04 GB | 0.7 s |
+| | **port `--t 1`** | 36 | **0.04 GB** | **0.9 s** |
 
-`write_fastq`, the subcommand that splits a clustering into per-cluster fastq
-files, is not covered by the rows above and is currently the most memory-hungry
-path: 3.99 GB on SIRV real full at `--N 0`, 3.79 GB at `--N 2`. It holds every
-record it will write. See PORTING.md.
+The python implementation was not run on Drosophila at 1M reads (takes too long).
+`--t 8` on the full corpora: SIRV real 1.34 GB / 40 s, Drosophila 2.95 GB / 205 s.
+
+`write_fastq` accounts for 0.09–0.12 GB of the port's peak, so the numbers above
+are set by the clustering step. Its *time* tracks the number of clusters rather
+than reads, because that is how many files it opens: 2.5 s for droso_20k's 5 679
+clusters, 0.08 s for SIRV PacBio's 151, 45 s for droso_1M's 84 318.
+
+**It does not clear the output folder.** Files are named `<cluster id>.fastq`, so
+`.fastq` files left from an earlier run with different cluster ids survive and
+become part of the output. The python implementation behaves the same way. Empty
+the folder between runs.
+
+For reference, the port's own figures before the memory work described in
+PORTING.md: SIRV real full 13.46 GB / 371 s, Drosophila 1M 10.99 GB / 1472 s.
 
 ## Accuracy — gene level
 

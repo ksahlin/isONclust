@@ -625,7 +625,8 @@ engineering summary.
   eight processes.
 * **Two changes account for the speed.** Linking parasail's C library rather than the port's own
   exact scalar reimplementation: before it the port was 2.7–3.6x *slower* than the reference on
-  PacBio and Drosophila, and alignment is 96–99.6% of runtime with the scalar version 13–16x slower
+  PacBio and Drosophila, and alignment is 65–99.6% of runtime depending on cluster count, with the
+  scalar version 13–16x slower
   than the library. Then the memory work, which was not expected to affect runtime at all and took
   droso_100k down 27% and SIRV_real_full 4x — see *Memory: profiled, then cut by 4x*.
 * **These corpora are 10k–20k reads and understate both.** At 1M+ reads the port is 2.1x below the
@@ -639,17 +640,58 @@ engineering summary.
 
 Sampling could not answer this: at `--release` the stage functions inline into
 `reads_to_clusters`, so `sample` attributes 94–99.7% of everything to that one symbol. Explicit
-stage timers (`ISONCLUST_PROFILE=1`) can:
+stage timers (`ISONCLUST_PROFILE=1`) can.
 
 | corpus | alignment | mapping decision | hit collection | minimizers | error rate | db insert |
 | --- | --- | --- | --- | --- | --- | --- |
-| `sirv_real_10k` | **98.1%** | 0.1% | 0.6% | 0.9% | 0.4% | 0.0% |
-| `droso_20k` | **96.1%** | 2.1% | 1.3% | 0.2% | 0.1% | 0.2% |
-| `sirv_pacbio` | **99.6%** | 0.0% | 0.1% | 0.2% | 0.1% | 0.0% |
+| `sirv_real_10k` | 98.1% | 0.1% | 0.6% | 0.9% | 0.4% | 0.0% |
+| `droso_20k` | 96.1% | 2.1% | 1.3% | 0.2% | 0.1% | 0.2% |
+| `sirv_pacbio` | 99.6% | 0.0% | 0.1% | 0.2% | 0.1% | 0.0% |
+| `droso_100k` | 78.7% | 10.3% | 9.5% | 1.1% | 0.0% | 0.4% |
+| `droso_1M` | 65.3% | 22.3% | 11.5% | 0.8% | 0.0% | 0.1% |
 
-**Nothing except the aligner is worth optimising.** Note this holds even on `sirv_real_10k`, where
-only 1806 of 9972 reads are *decided* by alignment — each alignment costs milliseconds while
-everything else costs microseconds, so a path taken by 18% of reads consumes 98% of the time.
+**The share depends on scale, and an earlier version of this section drew the wrong conclusion from
+the top three rows alone** -- it said "nothing except the aligner is worth optimising". On 10k–20k
+reads that is true, because those corpora form few clusters and a read reaches at most a candidate or
+two. At 1M reads Drosophila forms 84 318 clusters, each read has many candidates, and the ranking of
+those candidates costs 22%.
+
+Growth rates between `droso_100k` and `droso_1M`, which is where the conclusion comes from:
+
+| stage | growth for 10x the reads | exponent |
+| --- | --- | --- |
+| alignment | 12.6x | n^1.10 |
+| **mapping decision** | **33.0x** | **n^1.52** |
+| hit collection | 18.5x | n^1.27 |
+| minimizers | 10.5x | n^1.02 |
+
+Alignment is the largest share and the *least* superlinear. The mapping decision is the one that
+grows, because its cost is per candidate and the candidate count grows with the number of clusters.
+
+The error-rate row reads 0.0% because the quality release moved that computation out of the sweep
+entirely -- it is done once per read at load; see *Memory: profiled, then cut by 4x*.
+
+#### What was done about it
+
+`get_best_cluster` ranks candidates by `(shared minimizers, sum of their positions, accession)`
+descending, and built that key **inside the sort comparator**. Every comparison therefore re-summed a
+positions vector, O(k), and did a hash lookup for the accession, so ranking n candidates cost
+O(n log n · k) additions and O(n log n) lookups *per read*. Decorate-sort-undecorate -- build the key
+once per candidate, then sort precomputed tuples -- makes that O(n·k + n log n).
+`blockalign::get_best_cluster_block_align` had the identical pattern. The `probs` vector, previously
+allocated per candidate, is reused.
+
+Byte-identical because the key is unchanged and the order is total: accessions are unique, which
+`assert_unique_accessions` enforces, so no full ties exist for the sort to break differently.
+
+| | before | after |
+| --- | --- | --- |
+| droso_100k, mapping stage | 4.66 s | **1.75 s** |
+| droso_100k, total | 48.09 s | **43.17 s** |
+| droso_1M, clustering | 726 s | **578 s** |
+
+The gain is larger at 1M than at 100k (−20% against −10%) for the same reason the stage grew in the
+first place.
 
 ### Accuracy
 
