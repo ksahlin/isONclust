@@ -54,19 +54,21 @@ steps, time is their sum. Single-threaded except where `--t 8` is shown.
 | corpus | tool | clusters | peak RSS | time |
 |---|---|---|---|---|
 | SIRV real, full, 1 300 066 reads | python | 579 | 3.57 GB | 495 s |
+| | port `--t 1` | 579 | **0.76 GB** | **76 s** |
 | | isONclust3 | 56 | 3.44 GB | 252 s |
-| | **port `--t 1`** | 579 | **0.76 GB** | **76 s** |
-| Drosophila ONT, 1 000 000 reads | isONclust3 | 42 710 | 4.53 GB | 259 s |
-| | **port `--t 1`** | 84 318 | **1.34 GB** | **622 s** |
+| Drosophila ONT, 1 000 000 reads | port `--t 1` | 84 318 | **1.34 GB** | 622 s |
+| | isONclust3 | 42 710 | 4.53 GB | **259 s** |
 | Drosophila ONT, 20 000 reads | python | 5 679 | 0.70 GB | 19 s |
-| | isONclust3 | 6 424 | 0.20 GB | 4.8 s |
-| | **port `--t 1`** | 5 679 | **0.33 GB** | **7.9 s** |
+| | port `--t 1` | 5 679 | 0.33 GB | 7.9 s |
+| | isONclust3 | 6 424 | **0.20 GB** | **4.8 s** |
 | SIRV PacBio, 17 633 reads | python | 151 | 1.05 GB | 24 s |
-| | isONclust3 | 163 | 0.19 GB | 1.7 s |
-| | **port `--t 1`** | 151 | **0.75 GB** | **9.9 s** |
+| | port `--t 1` | 151 | 0.75 GB | 9.9 s |
+| | isONclust3 | 163 | **0.19 GB** | **1.7 s** |
 | SIRV ONT, 10 000 reads | python | 36 | 0.19 GB | 4.4 s |
-| | isONclust3 | 66 | 0.04 GB | 0.7 s |
-| | **port `--t 1`** | 36 | **0.04 GB** | **0.9 s** |
+| | port `--t 1` | 36 | **0.04 GB** | 0.9 s |
+| | isONclust3 | 66 | **0.04 GB** | **0.7 s** |
+
+Bold is the best value in each column for that corpus.
 
 The python implementation was not run on Drosophila at 1M reads (takes too long).
 `--t 8` on the full corpora: SIRV real 1.34 GB / 40 s, Drosophila 2.95 GB / 205 s.
@@ -86,29 +88,32 @@ PORTING.md: SIRV real full 13.46 GB / 371 s, Drosophila 1M 10.99 GB / 1472 s.
 
 ## Accuracy — gene level
 
+Bold is the best value in each column. `clusters` and `max cluster` are
+descriptive, not better-or-worse, so they are not marked.
+
 ### SIRV ONT, 9998 reads with truth, 7 genes
 
 | tool | `--t` | clusters | homogeneity | completeness | V | ARI | max cluster |
 |---|---|---|---|---|---|---|---|
-| python / **port** | 1 | 36 | 1.0000 | 0.5729 | 0.7285 | 0.5681 | 3835 |
-| python / **port** | 8 | 30 | 1.0000 | 0.6472 | 0.7858 | 0.7338 | 4595 |
-| isONclust3 | — | 66 | 1.0000 | 0.5005 | 0.6671 | 0.3119 | 1776 |
+| python / port | 1 | 36 | **1.0000** | 0.5729 | 0.7285 | 0.5681 | 3835 |
+| python / port | 8 | 30 | **1.0000** | **0.6472** | **0.7858** | **0.7338** | 4595 |
+| isONclust3 | — | 66 | **1.0000** | 0.5005 | 0.6671 | 0.3119 | 1776 |
 
 ### SIRV PacBio, 14 783 reads with truth, 7 genes
 
 | tool | `--t` | clusters | homogeneity | completeness | V | ARI | max cluster |
 |---|---|---|---|---|---|---|---|
-| python / **port** | 1 | 151 | 1.0000 | 0.6853 | 0.8132 | 0.7138 | 3327 |
-| python / **port** | 8 | 110 | 1.0000 | 0.6933 | 0.8189 | 0.7259 | 3334 |
+| python / port | 1 | 151 | **1.0000** | 0.6853 | 0.8132 | 0.7138 | 3327 |
+| python / port | 8 | 110 | **1.0000** | **0.6933** | **0.8189** | **0.7259** | 3334 |
 | isONclust3 | — | 163 | 0.6482 | 0.6503 | 0.6492 | 0.3578 | 8237 |
 
 ### Drosophila ONT, 20 000 reads, 3871 genes
 
 | tool | `--t` | clusters | homogeneity | completeness | V | ARI | max cluster |
 |---|---|---|---|---|---|---|---|
-| python / **port** | 1 | 5679 | 0.9932 | 0.9826 | 0.9878 | 0.9285 | 459 |
-| python / **port** | 8 | 5538 | 0.9914 | 0.9882 | 0.9898 | 0.9388 | 488 |
-| isONclust3 | — | 6424 | 0.9937 | 0.9676 | 0.9805 | 0.9563 | 526 |
+| python / port | 1 | 5679 | 0.9932 | 0.9826 | 0.9878 | 0.9285 | 459 |
+| python / port | 8 | 5538 | 0.9914 | **0.9882** | **0.9898** | 0.9388 | 488 |
+| isONclust3 | — | 6424 | **0.9937** | 0.9676 | 0.9805 | **0.9563** | 526 |
 
 ### Top 10 cluster sizes
 
@@ -132,7 +137,7 @@ reference:
 
 | | isoforms | matching | recall | precision | F1 | isONform runtime |
 |---|---|---|---|---|---|---|
-| isONclust1 | 70 | 35 | 47.1% | 50.0% | 0.485 | 386 s |
+| isONclust1 | 70 | **35** | **47.1%** | **50.0%** | **0.485** | **386 s** |
 | isONclust3 | 61 | 27 | 38.2% | 44.3% | 0.410 | 2053 s |
 
 isONform's cost grows with cluster size, and the runtimes differ by ~1670 s.
