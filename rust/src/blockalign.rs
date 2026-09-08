@@ -203,36 +203,35 @@ pub fn get_best_cluster_block_align(
         return result;
     }
 
-    let mut top_matches: Vec<usize> = hits.order.clone();
-    top_matches.sort_by(|a, b| {
-        let (ha, hb) = (&hits.by_cluster[a], &hits.by_cluster[b]);
-        let ka = (
-            ha.positions.len(),
-            ha.positions.iter().sum::<usize>(),
-            src.acc(*a),
-        );
-        let kb = (
-            hb.positions.len(),
-            hb.positions.iter().sum::<usize>(),
-            src.acc(*b),
-        );
-        kb.cmp(&ka)
-    });
+    // Key built once per candidate; see the note in `cluster::get_best_cluster`.
+    let mut top_matches: Vec<(usize, usize, &str, usize)> = hits
+        .order
+        .iter()
+        .map(|&id| {
+            let h = &hits.by_cluster[&id];
+            (
+                h.positions.len(),
+                h.positions.iter().sum::<usize>(),
+                src.acc(id),
+                id,
+            )
+        })
+        .collect();
+    top_matches.sort_by(|a, b| (b.0, b.1, b.2).cmp(&(a.0, a.1, a.2)));
 
     // Two buffers, reused: the read's sequence is unpacked once, the candidate's
     // once per candidate tried.
     let mut seq: Vec<u8> = Vec::new();
     let mut c_seq: Vec<u8> = Vec::new();
     src.seq_into(read_cl_id, &mut seq);
-    let top_hits = hits.by_cluster[&top_matches[0]].positions.len();
+    let top_hits = top_matches[0].0;
     // The reference recomputes this inside the candidate loop, once per
     // candidate, from the same unchanging quality string. Hoisting it is
     // behaviour-neutral -- the value is identical every time -- and it is now
     // computed once at load instead, from the same expression.
     let read_errors = src.err_per_base(read_cl_id);
 
-    for cl_id in top_matches {
-        let nm_hits = hits.by_cluster[&cl_id].positions.len();
+    for (nm_hits, _, _, cl_id) in top_matches {
         if nm_hits < top_hits {
             break;
         }

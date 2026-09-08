@@ -247,23 +247,29 @@ pub fn get_best_cluster(
     }
 
     // sorted(..., key=(len, sum(positions), acc), reverse=True)
-    let mut top_matches: Vec<usize> = hits.order.clone();
-    top_matches.sort_by(|a, b| {
-        let (ha, hb) = (&hits.by_cluster[a], &hits.by_cluster[b]);
-        let ka = (
-            ha.positions.len(),
-            ha.positions.iter().sum::<usize>(),
-            representatives.acc(*a),
-        );
-        let kb = (
-            hb.positions.len(),
-            hb.positions.iter().sum::<usize>(),
-            representatives.acc(*b),
-        );
-        kb.cmp(&ka) // reverse=True
-    });
+    //
+    // The key is built once per candidate rather than inside the comparator.
+    // Computed there, `positions.iter().sum()` ran on every comparison -- O(n log
+    // n) sums of O(k) each -- and `acc` was a hash lookup per comparison. This is
+    // the same total order: accessions are unique, which
+    // `assert_unique_accessions` enforces, so there are no full ties for the sort
+    // to break.
+    let mut top_matches: Vec<(usize, usize, &str, usize)> = hits
+        .order
+        .iter()
+        .map(|&id| {
+            let h = &hits.by_cluster[&id];
+            (
+                h.positions.len(),
+                h.positions.iter().sum::<usize>(),
+                representatives.acc(id),
+                id,
+            )
+        })
+        .collect();
+    top_matches.sort_by(|a, b| (b.0, b.1, b.2).cmp(&(a.0, a.1, a.2))); // reverse=True
 
-    let top_hits = hits.by_cluster[&top_matches[0]].positions.len();
+    let top_hits = top_matches[0].0;
     result.nr_shared_kmers = top_hits;
     if (top_hits as i64) < min_shared {
         return result;
@@ -272,9 +278,10 @@ pub fn get_best_cluster(
     let error_rate_read = representatives.error_rate(read_cl_id);
     let e_read = crate::p_emp::error_rate_index(error_rate_read);
 
-    for cl_id in top_matches {
+    // Reused across candidates instead of allocated per candidate.
+    let mut probs: Vec<f64> = Vec::new();
+    for (nm_hits, _, _, cl_id) in top_matches {
         let h = &hits.by_cluster[&cl_id];
-        let nm_hits = h.positions.len();
         if (nm_hits as f64) < min_fraction * top_hits as f64 || (nm_hits as i64) < min_shared {
             break;
         }
@@ -286,7 +293,8 @@ pub fn get_best_cluster(
         // between each consecutive pair, one after the last.
         let idx = &h.indices;
         let pos = &h.positions;
-        let mut probs: Vec<f64> = Vec::with_capacity(idx.len() + 1);
+        probs.clear();
+        probs.reserve(idx.len() + 1);
         probs.push(prob_run(p_error_in_kmers_emp, idx[0]));
         for pair in idx.windows(2) {
             probs.push(prob_run(p_error_in_kmers_emp, pair[1] - pair[0] - 1));
