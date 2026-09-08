@@ -916,29 +916,39 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
             .push(acc.to_string());
     }
 
-    // Which accessions will actually be written. `--N` drops small clusters, and
-    // on real data most clusters are singletons, so at `--N 2` this is a small
-    // fraction of the file.
+    // Which accessions will actually be written. `--N` drops small clusters.
     let needed: rustc_hash::FxHashSet<&str> = order
         .iter()
         .filter(|cl_id| members[*cl_id].len() as i64 >= wf.n)
         .flat_map(|cl_id| members[cl_id].iter().map(String::as_str))
         .collect();
 
-    // Streamed, and only the needed records are retained. This used to
-    // `read_to_string` the whole input AND then build an owned copy of every
-    // read's sequence and quality -- two full copies of the file, over 4 GB on a
-    // 1.9 GB input, in a subcommand the memory benchmarks never exercised.
-    let mut reads: rustc_hash::FxHashMap<String, (String, String)> =
-        rustc_hash::FxHashMap::default();
-    if let Err(e) = fastq::for_each_file(std::path::Path::new(fastq_path), |r| {
+    // An index, not the reads. This used to hold every read's sequence and
+    // quality as owned Strings -- 3.99 GB on a 1.87 GB input, five times the
+    // clustering stage -- because the clusters file names reads by accession, so
+    // they cannot be emitted in input order. Instead each needed accession maps
+    // to the byte range of its record, and the record is read back when its
+    // cluster is written: ~100 bytes per read instead of ~1.4 KB.
+    //
+    // The ranges come from the parser rather than a scan for `@`, because a
+    // quality line can begin with `@`; see `fastq::for_each_indexed`.
+    let mut index: rustc_hash::FxHashMap<String, (u64, u32)> = rustc_hash::FxHashMap::default();
+    if let Err(e) = fastq::for_each_file_indexed(std::path::Path::new(fastq_path), |r, at, n| {
         if needed.contains(r.name.as_str()) {
-            reads.insert(r.name, (r.seq, r.qual.unwrap_or_default()));
+            index.insert(r.name, (at, n));
         }
     }) {
         eprintln!("isONclust: cannot read {fastq_path}: {e}");
         return ExitCode::from(1);
     }
+
+    let src = match std::fs::File::open(fastq_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("isONclust: cannot read {fastq_path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
 
     if let Err(e) = std::fs::create_dir_all(outfolder) {
         eprintln!("isONclust: cannot create {outfolder}: {e}");
@@ -950,19 +960,35 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
             continue;
         }
         let mut body = String::new();
+        let mut raw = Vec::new();
         for acc in accs {
-            match reads.get(acc) {
-                Some((seq, qual)) => {
-                    body.push_str(&format!("@{acc}\n{seq}\n+\n{qual}\n"));
-                }
-                None => {
-                    // The reference raises KeyError here.
-                    eprintln!(
-                        "isONclust: read {acc:?} is in {clusters_path} but not in {fastq_path}"
-                    );
-                    return ExitCode::from(1);
-                }
+            let Some(&(at, n)) = index.get(acc) else {
+                // The reference raises KeyError here.
+                eprintln!("isONclust: read {acc:?} is in {clusters_path} but not in {fastq_path}");
+                return ExitCode::from(1);
+            };
+            // Read just this record and re-parse it with the same parser that
+            // produced the range, so there is no second interpretation of the
+            // bytes to get out of step.
+            raw.resize(n as usize, 0);
+            use std::os::unix::fs::FileExt;
+            if let Err(e) = src.read_exact_at(&mut raw, at) {
+                eprintln!("isONclust: cannot read {fastq_path}: {e}");
+                return ExitCode::from(1);
             }
+            let text = String::from_utf8_lossy(&raw);
+            let mut rec = None;
+            fastq::for_each(text.split_inclusive('\n'), |r| rec = Some(r));
+            let Some(r) = rec else {
+                eprintln!("isONclust: read {acc:?} could not be re-read from {fastq_path}");
+                return ExitCode::from(1);
+            };
+            body.push_str(&format!(
+                "@{}\n{}\n+\n{}\n",
+                acc,
+                r.seq,
+                r.qual.unwrap_or_default()
+            ));
         }
         let path = std::path::Path::new(outfolder).join(format!("{cl_id}.fastq"));
         if let Err(e) = std::fs::write(&path, body) {

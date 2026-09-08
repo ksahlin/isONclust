@@ -57,48 +57,79 @@ where
     I: IntoIterator<Item = S>,
     F: FnMut(Record),
 {
+    for_each_indexed(
+        lines.into_iter().map(|l| {
+            let n = l.as_ref().len();
+            (l, n)
+        }),
+        |r, _, _| f(r),
+    );
+}
+
+/// `for_each`, plus each record's byte range in the input.
+///
+/// Lines arrive as `(line, byte length)`, and `f` is called with the record, the
+/// byte offset its header line starts at, and how many bytes the whole record
+/// occupies. `write_fastq` uses this to index a fastq by accession and then read
+/// records back one at a time instead of holding them all -- the offsets have to
+/// come from this parser rather than a scan for `@`, because a quality line can
+/// begin with `@` and only the state machine knows which is which.
+pub fn for_each_indexed<S, I, F>(lines: I, mut f: F)
+where
+    S: AsRef<str>,
+    I: IntoIterator<Item = (S, usize)>,
+    F: FnMut(Record, u64, u32),
+{
     let mut it = lines.into_iter();
-    // The lookahead the reference's `readfq` carries between records. It was
-    // already an owned `String` before this streamed, which is why the parser
-    // needs no borrow into the file text.
-    let mut last: Option<String> = None;
+    // The lookahead, with the offset its line started at.
+    let mut last: Option<(String, u64)> = None;
+    let mut pos: u64 = 0;
 
     loop {
         if last.is_none() {
             // Look for the next header.
-            for l in it.by_ref() {
+            for (l, n) in it.by_ref() {
+                let start = pos;
+                pos += n as u64;
                 let l = l.as_ref();
                 if l.starts_with('>') || l.starts_with('@') {
-                    last = Some(chop(l).to_string());
+                    last = Some((chop(l).to_string(), start));
                     break;
                 }
             }
         }
-        let header = match last.take() {
+        let (header, record_start) = match last.take() {
             Some(h) => h,
             None => break,
         };
 
         let name = header[1..].replace(' ', "_");
         let mut seq = String::new();
-        let mut next_header: Option<String> = None;
-        for l in it.by_ref() {
+        let mut next_header: Option<(String, u64)> = None;
+        for (l, n) in it.by_ref() {
+            let start = pos;
+            pos += n as u64;
             let l = l.as_ref();
             if l.starts_with('@') || l.starts_with('+') || l.starts_with('>') {
-                next_header = Some(chop(l).to_string());
+                next_header = Some((chop(l).to_string(), start));
                 break;
             }
             seq.push_str(chop(l));
         }
 
-        let is_fastq = matches!(&next_header, Some(h) if h.starts_with('+'));
+        let is_fastq = matches!(&next_header, Some((h, _)) if h.starts_with('+'));
         if !is_fastq {
-            // fasta record
-            f(Record {
-                name,
-                seq,
-                qual: None,
-            });
+            // fasta record: it ends where the next header begins, or at EOF.
+            let end = next_header.as_ref().map_or(pos, |(_, o)| *o);
+            f(
+                Record {
+                    name,
+                    seq,
+                    qual: None,
+                },
+                record_start,
+                (end - record_start) as u32,
+            );
             match next_header {
                 Some(h) => last = Some(h),
                 None => break,
@@ -110,19 +141,25 @@ where
         let mut quals = String::new();
         let mut leng = 0usize;
         let mut completed = false;
-        for l in it.by_ref() {
+        for (l, n) in it.by_ref() {
+            pos += n as u64;
             let q = chop(l.as_ref());
             quals.push_str(q);
             leng += q.chars().count();
             if leng >= seq_chars {
                 last = None;
-                f(Record {
-                    // Cloned because the compiler cannot see that the `!completed`
-                    // branch below is unreachable once this has run.
-                    name: name.clone(),
-                    seq: std::mem::take(&mut seq),
-                    qual: Some(std::mem::take(&mut quals)),
-                });
+                f(
+                    Record {
+                        // Cloned because the compiler cannot see that the
+                        // `!completed` branch below is unreachable once this has
+                        // run.
+                        name: name.clone(),
+                        seq: std::mem::take(&mut seq),
+                        qual: Some(std::mem::take(&mut quals)),
+                    },
+                    record_start,
+                    (pos - record_start) as u32,
+                );
                 completed = true;
                 break;
             }
@@ -130,11 +167,15 @@ where
         if !completed {
             // EOF before enough quality: the reference yields a fasta record
             // and stops entirely.
-            f(Record {
-                name,
-                seq,
-                qual: None,
-            });
+            f(
+                Record {
+                    name,
+                    seq,
+                    qual: None,
+                },
+                record_start,
+                (pos - record_start) as u32,
+            );
             break;
         }
     }
@@ -145,6 +186,45 @@ where
 /// Reads a line at a time rather than the whole file, and validates UTF-8 per
 /// line -- equivalent to `read_to_string`, because `\n` cannot appear inside a
 /// multi-byte UTF-8 sequence.
+/// `for_each_file`, plus each record's byte range; see `for_each_indexed`.
+pub fn for_each_file_indexed<F>(path: &std::path::Path, f: F) -> std::io::Result<()>
+where
+    F: FnMut(Record, u64, u32),
+{
+    use std::io::BufRead;
+    let file = std::fs::File::open(path)?;
+    let mut rdr = std::io::BufReader::with_capacity(1 << 20, file);
+    let mut err: Option<std::io::Error> = None;
+    {
+        let mut buf = Vec::new();
+        let lines = std::iter::from_fn(|| {
+            buf.clear();
+            match rdr.read_until(b'\n', &mut buf) {
+                Ok(0) => None,
+                Ok(n) => match std::str::from_utf8(&buf) {
+                    Ok(s) => Some((s.to_string(), n)),
+                    Err(_) => {
+                        err = Some(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "stream did not contain valid UTF-8",
+                        ));
+                        None
+                    }
+                },
+                Err(e) => {
+                    err = Some(e);
+                    None
+                }
+            }
+        });
+        for_each_indexed(lines, f);
+    }
+    match err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
 pub fn for_each_file<F>(path: &std::path::Path, f: F) -> std::io::Result<()>
 where
     F: FnMut(Record),
@@ -186,6 +266,49 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A record's reported byte range must be exactly the bytes of that record,
+    /// so that reading `len` bytes at `start` and re-parsing yields it again.
+    /// `write_fastq` indexes a fastq this way and then reads records back one at
+    /// a time, so an off-by-one here would silently emit the wrong read.
+    #[test]
+    fn reported_byte_ranges_round_trip_through_the_parser() {
+        let cases = [
+            "@r1\nACGT\n+\nIIII\n@r2\nTTTT\n+\nJJJJ\n",
+            // a quality line that begins with '@', which a naive scan would take
+            // for a header
+            "@r1\nACGT\n+\n@@@@\n@r2\nTTTT\n+\nJJJJ\n",
+            // multi-line sequence and quality
+            "@r1\nAC\nGT\n+\nII\nII\n@r2\nTT\n+\nJJ\n",
+            // fasta
+            ">r1\nACGT\n>r2\nTTTT\n",
+            // no trailing newline
+            "@r1\nACGT\n+\nIIII",
+            // junk before the first header
+            "noise\n@r1\nACGT\n+\nIIII\n",
+        ];
+        for (i, text) in cases.iter().enumerate() {
+            let mut got = Vec::new();
+            for_each_indexed(
+                text.split_inclusive('\n').map(|l| (l, l.len())),
+                |r, at, n| got.push((r, at, n)),
+            );
+            let want = read(text);
+            assert_eq!(got.len(), want.len(), "case {i}");
+            for ((rec, at, n), w) in got.iter().zip(&want) {
+                assert_eq!(rec, w, "case {i}: record");
+                let slice = &text.as_bytes()[*at as usize..(*at as usize + *n as usize)];
+                let reparsed = read(std::str::from_utf8(slice).expect("utf8"));
+                assert_eq!(
+                    reparsed.len(),
+                    1,
+                    "case {i}: slice {:?} should hold exactly one record",
+                    std::str::from_utf8(slice).unwrap()
+                );
+                assert_eq!(&reparsed[0], w, "case {i}: re-parsed slice");
+            }
+        }
+    }
 
     /// `for_each_file` must parse byte-for-byte what `read` parses from the
     /// whole file. The streaming path exists only to save memory; any

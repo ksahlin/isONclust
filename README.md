@@ -1,125 +1,79 @@
 # isONclust - Clustering of long-read transcriptome reads into gene families
 
-### isONclust has been re-implemented in Rust (2026-09-08) and is 2-7x faster on a fraction of the memory, with byte-identical output ([benchmarks](Port-benchmark.md)).
+### isONclust has been re-implemented in Rust (2026-09-08) and produces identical output 2-7x faster on a fraction of the memory (see below).
 
+isONclust clusters PacBio Iso-Seq or Oxford Nanopore reads so that each cluster
+holds the reads from one gene. Output is a tsv file assigning each read to a
+cluster ID. Detailed information is in the [paper](https://link.springer.com/chapter/10.1007/978-3-030-17083-7_14).
 
+## Installation <a name="installation"></a>
 
-
-isONclust is a tool for clustering either PacBio Iso-Seq reads, or Oxford Nanopore reads into clusters, where each cluster represents all reads that came from a gene. Output is a tsv file with each read assigned to a cluster-ID. Detailed information is available in [paper](https://link.springer.com/chapter/10.1007/978-3-030-17083-7_14).  
-
-
-isONclust is distributed as a python package supported on Linux / OSX with python v>=3.4 as of version 0.0.2 and above (due to updates in python's multiprocessing library). [![Build Status](https://travis-ci.org/ksahlin/isONclust.svg?branch=master)](https://travis-ci.org/ksahlin/isONclust).
-
-Table of Contents
-=================
-
-  * [INSTALLATION](#INSTALLATION)
-    * [Using conda](#Using-conda)
-    * [Using pip](#Using-pip)
-    * [Downloading source from GitHub](#Downloading-source-from-github)
-    * [Dependencies](#Dependencies)
-    * [Testing installation](#testing-installation)
-  * [USAGE](#USAGE)
-    * [Iso-Seq](#Iso-Seq)
-    * [Oxford Nanopore](#Oxford-Nanopore)
-    * [Output](#Output)
-    * [Parameters](#Parameters)
-  * [CREDITS](#CREDITS)
-  * [LICENCE](#LICENCE)
-
-
-
-INSTALLATION
-----------------
-
-### Using conda
-Conda is the preferred way to install isONclust.
-
-1. Create and activate a new environment called isonclust
+It needs a Rust toolchain ([rustup.rs](https://rustup.rs)), `cmake` and `libclang`.
 
 ```
-conda create -n isonclust python=3 pip 
-source activate isonclust
-```
-
-2. Install isONclust 
-
-```
-pip install isONclust
-```
-3. You should now have 'isONclust' installed; try it:
-```
-isONclust --help
-```
-
-Upon start/login to your server/computer you need to activate the conda environment "isonclust" to run isONclust as:
-```
-source activate isonclust
-```
-
-### Using pip 
-
-To install isONclust, run:
-```
-pip install  isONclust
-```
-`pip` will install the dependencies automatically for you. `pip` is pythons official package installer and is included in most python versions. If you do not have `pip`, it can be easily installed [from here](https://pip.pypa.io/en/stable/installing/) and upgraded with `pip install --upgrade pip`. 
-
-
-### Using the Rust implementation
-
-The Rust port is a drop-in replacement: same command line, same flags, same
-output files, byte for byte.
-
-```
-cd rust
-cargo build --release
-./target/release/isONclust --ont --fastq [reads.fastq] --outfolder [/path/to/output]
-```
-
-It links [parasail](https://github.com/jeffdaily/parasail) for alignment, which
-needs `cmake` and `libclang` at build time. If you would rather not have those,
-`cargo build --release --no-default-features` builds a pure-Rust version that
-produces identical output about 3x more slowly.
-
-### Downloading source from GitHub
-
-#### Dependencies
-
-Make sure the below listed dependencies are installed (installation links below). Versions in parenthesis are suggested as isONclust has not been tested with earlier versions of these libraries. However, isONclust may also work with earliear versions of these libaries.
-* [parasail](https://github.com/jeffdaily/parasail-python)
-* [pysam](http://pysam.readthedocs.io/en/latest/installation.html) (>= v0.11)
-
-In addition, please make sure you use python version >=3.4. isONclust will not work with python 2.
-
-With these dependencies installed. Run
-
-```sh
 git clone https://github.com/ksahlin/isONclust.git
-cd isONclust
-./isONclust
+cd isONclust/rust
+cargo build --release
 ```
 
-### Testing installation
+That produces `target/release/isONclust`. Put it on your `PATH` and run it as
+shown under [Running isONclust](#Running). Without `cmake` or `libclang`, add
+`--no-default-features`: same output, about 3x slower.
 
-You can verify successul installation by running isONclust on this [small dataset](https://github.com/ksahlin/isONclust/tree/master/test/sirv_sim_120.fastq). Simply download the test dataset and run:
+The original python implementation is still available and is the reference this
+port is checked against; see [INSTALL-python.md](INSTALL-python.md).
+
+### Rust-port versions
+
+The port is a drop-in replacement: same command line, same flags, same output
+files, **byte for byte**. All 27 equivalence cases pass, and on a full
+1 300 066-read corpus every output file matches the reference's exactly.
+
+One divergence: sequences are 2-bit packed, so a non-ACGT base (`N`, lowercase,
+IUPAC codes) is read as `A`. Every corpus tested is pure ACGT; the loader counts
+substitutions and warns if it sees any. See `rust/src/packed.rs`.
+
+Peak RSS and runtime at `--t 1`:
+
+| corpus | reads | python | Rust port |
+|---|---|---|---|
+| SIRV ONT | 10 000 | 235 MB / 4.25 s | **39 MB / 0.84 s** |
+| Drosophila ONT | 20 000 | 704 MB / 16.1 s | **328 MB / 5.83 s** |
+| SIRV PacBio | 17 633 | 1092 MB / 23.6 s | **746 MB / 9.80 s** |
+| SIRV ONT, full | 1 300 066 | 3.55 GB / 491 s | **0.74 GB / 72.9 s** |
+
+Full comparison --- accuracy against gene-level truth, cluster-size
+distributions, and a comparison with
+[isONclust3](https://github.com/aljpetri/isONclust3) --- is in
+[Port-benchmark.md](Port-benchmark.md).
+
+### Running a test <a name="runtest"></a>
+
+`test/sirv_sim_120.fastq` is a small dataset for checking an installation: 120
+simulated SIRV reads at 7% error covering 54 of the 68 SIRV transcripts, with
+the source transcript in each read header.
 
 ```
-isONclust --ont --fastq [test/sirv_sim_120.fastq] --outfolder [output path]
+isONclust --ont --fastq test/sirv_sim_120.fastq --outfolder /tmp/isonclust_test
 ```
 
-The dataset is 120 simulated SIRV reads at 7% error covering 54 of the 68 SIRV
-transcripts, with the source transcript in each read header. With the default
-`--t 8` it produces 35 clusters, 21 of them with more than one read; with
-`--t 1` it produces 40 and 24. (`--t` selects a different clustering strategy,
-not just a thread count, so the two legitimately differ.)
+This finishes in under a second and writes `final_clusters.tsv`. With the
+default `--t 8` it produces 35 clusters, 21 of them with more than one read;
+with `--t 1` it produces 40 and 24. (`--t` selects a different clustering
+strategy, not just a thread count, so the two legitimately differ.)
+
+## Input data <a name="Input_data"></a>
+
+A fastq file from an ONT basecaller, or full-length non-chimeric (_flnc_) PacBio
+Iso-Seq reads with quality values. Reads should have barcodes removed --- with
+[LIMA](https://lima.how/) for PacBio, or
+[Pychopper](https://github.com/epi2me-labs/pychopper) for ONT.
 
 
-USAGE
--------
+## Running isONclust <a name="Running"></a>
 
-IsONclust can be used with either Iso-Seq or ONT reads. It takes either a fastq file or ccs.bam file. 
- 
+Either Iso-Seq or ONT reads, as a fastq file or a ccs.bam file.
+
 ### Oxford Nanopore reads
 isONclust needs a fastq file generated by an Oxford Nanopore basecaller.
 
@@ -151,7 +105,7 @@ isONclust --isoseq --ccs [ccs.bam] --flnc [flnc.bam] --outfolder [/path/to/outpu
 Where `<ccs.bam>` is the file generated from `ccs` and `<flnc.bam>` is the file generated from `isoseq3 cluster`. The argument `--isoseq` simply means `--k 15 --w 50`. These arguments can be set manually without the `--isoseq` flag. Specify number of cores with `--t`. 
 
 
-### Output
+## Outputs <a name="Outputs"></a>
 
 #### Clustering information
 The output consists of a tsv file `final_clusters.tsv` present in the specified output folder. In this file, the first column is the cluster ID and the second column is the read accession. For example:
@@ -173,8 +127,7 @@ isONclust write_fastq --clusters [/path/to/output/]final_clusters.tsv --fastq [r
 
 
 
-CREDITS
-----------------
+## Credits <a name="credits"></a>
 
 Please cite [1] when using isONclust.
 
@@ -199,8 +152,7 @@ eprint = {https://doi.org/10.1089/cmb.2019.0299},
 abstract = { Long-read sequencing of transcripts with Pacific Biosciences (PacBio) Iso-Seq and Oxford Nanopore Technologies has proven to be central to the study of complex isoform landscapes in many organisms. However, current de novo transcript reconstruction algorithms from long-read data are limited, leaving the potential of these technologies unfulfilled. A common bottleneck is the dearth of scalable and accurate algorithms for clustering long reads according to their gene family of origin. To address this challenge, we develop isONclust, a clustering algorithm that is greedy (to scale) and makes use of quality values (to handle variable error rates). We test isONclust on three simulated and five biological data sets, across a breadth of organisms, technologies, and read depths. Our results demonstrate that isONclust is a substantial improvement over previous approaches, both in terms of overall accuracy and/or scalability to large data sets. }
 }
 
-LICENCE
-----------------
+## Licence
 
 GPL v3.0, see [LICENSE.txt](https://github.com/ksahlin/isONclust/blob/master/LICENCE.txt).
 
