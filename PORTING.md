@@ -1768,6 +1768,22 @@ to three digits across interleaved pairs.
   entry falls through to a full scan. At 100M reads the chance of any collision at all is ~3e-4, so
   the scan is effectively never reached and the result is exact rather than probabilistic. Verified
   by diffing all 178 output files against the previous implementation.
+
+  **It is fast because the file is in page cache, and that is a real dependency.** The third pass
+  reads 1.3M records at scattered offsets; measured on SIRV_real_full, passes one and two cost 1.27 s
+  and the third adds 2.45 s for those reads *plus* writing 1.87 GB -- about 1.9 µs per record, which
+  is memory speed, not device speed. It is free only because pass two walked the whole file
+  immediately beforehand. Where the input is much larger than free RAM -- roughly 140 GB at 100M
+  reads -- the third pass becomes real random I/O: tolerable on NVMe at ~15 µs per read, unusable on
+  a spinning disk at ~8 ms. The memory figures above hold regardless; the runtime assumes fast
+  storage or a cache that fits.
+
+  The random reads are not avoidable without giving something else up. Reading the fastq sequentially
+  and appending each record to its cluster's file would produce file order, but the reference writes
+  each cluster's reads in the clusters-file order, which is score-descending, so the bytes would
+  differ and the `wf_N*` cases would fail. Buffering per cluster trades the memory straight back --
+  that is what the previous implementation did. An external sort by offset and then by cluster would
+  be correct and sequential, and is a much larger piece of work.
 - **The heap-to-RSS gap is parasail's C allocations. Measured, not inferred.** Building the same
   instrumented binary both ways on droso_100k gives *identical* live heap -- 0.157 GB to the megabyte
   -- and RSS of 0.755 GB with parasail's C library against 0.381 GB with the port's own aligner. A
