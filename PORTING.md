@@ -693,6 +693,51 @@ Byte-identical because the key is unchanged and the order is total: accessions a
 The gain is larger at 1M than at 100k (−20% against −10%) for the same reason the stage grew in the
 first place.
 
+### How it scales, measured on three Drosophila sizes
+
+| reads | clusters | reads/cluster | time `--t 1` | peak RSS |
+| --- | --- | --- | --- | --- |
+| 100 000 | 18 750 | 5.3 | 48 s | 0.70 GB |
+| 1 000 000 | 84 318 | 11.9 | 578 s | 1.34 GB |
+| 3 583 218 | 238 300 | 15.0 | 2644 s | 3.43 GB |
+
+Exponents between consecutive points:
+
+| | 0.1M → 1M | 1M → 3.58M |
+| --- | --- | --- |
+| clusters | n^0.65 | n^0.81 |
+| time | n^1.08 | n^1.19 |
+| peak RSS | n^0.28 | n^0.74 |
+
+**Cluster count does not saturate.** Its exponent *rises* between the two decades, so the number of
+clusters trends toward linear in reads rather than levelling off at some transcriptome-determined
+ceiling. Extrapolating the last decade to 100M reads gives roughly **3.5 million clusters**, ~39 h
+single-threaded, and ~42 GB.
+
+This matters because an earlier version of this file argued that per-read cost would plateau once
+cluster count saturated near 200 000, and that the runtime estimate for 100M reads followed from
+that. The premise was wrong: 200 000 clusters is reached at about 3M reads, and 3.58M reads already
+produces 238 300. The runtime estimate happens to survive -- but because the mapping optimisation
+brought the time exponent down, not because anything plateaued. Two different claims, and only the
+second is supported.
+
+Practical consequences at that scale: ~3.5 million per-cluster fastq files if `write_fastq` is run,
+which is a filesystem constraint rather than a memory one -- its own index is ~2.2 GB -- and the
+memory exponent of n^0.74 is what to plan against, not the n^0.28 the first decade suggested.
+
+The stage split at 3.58M reads, for comparison with the table above:
+
+| stage | 1M | 3.58M |
+| --- | --- | --- |
+| alignment | 65.3% | 64.9% |
+| hit collection | 11.5% | **18.9%** |
+| mapping decision | 22.3% | 15.3% |
+| minimizers | 0.8% | 0.9% |
+
+Hit collection is now the growing term at n^1.27 and is the next thing worth attacking. The mapping
+figures are not comparable across those two columns: the 1M profile predates the sort-key change, so
+that stage's real growth is understated here.
+
 ### Accuracy
 
 **isONclust is a gene clustering tool, and gene-level accuracy is the metric.** The README opens with
