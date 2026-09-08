@@ -31,14 +31,14 @@ files, **byte for byte**.
 One divergence: sequences are 2-bit packed, so a non-ACGT base will be converted
 to `A` (a warning is emitted if it sees any).
 
-Peak RSS and runtime at `--t 1`:
+Peak RSS and runtime at `--t 1`, for clustering plus `write_fastq`:
 
 | corpus | reads | python | Rust port |
 |---|---|---|---|
-| SIRV ONT | 10 000 | 235 MB / 4.25 s | **39 MB / 0.84 s** |
-| Drosophila ONT | 20 000 | 704 MB / 16.1 s | **328 MB / 5.83 s** |
-| SIRV PacBio | 17 633 | 1092 MB / 23.6 s | **746 MB / 9.80 s** |
-| SIRV ONT, full | 1 300 066 | 3.55 GB / 491 s | **0.74 GB / 72.9 s** |
+| SIRV ONT | 10 000 | 0.19 GB / 4.4 s | **0.04 GB / 0.9 s** |
+| Drosophila ONT | 20 000 | 0.70 GB / 19 s | **0.33 GB / 7.9 s** |
+| SIRV PacBio | 17 633 | 1.05 GB / 24 s | **0.75 GB / 9.9 s** |
+| SIRV ONT, full | 1 300 066 | 3.57 GB / 495 s | **0.76 GB / 76 s** |
 
 Full comparison --- accuracy against gene-level truth, cluster-size
 distributions, and a comparison with
