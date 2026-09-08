@@ -33,12 +33,21 @@ to `A` (a warning is emitted if it sees any).
 
 Peak RSS and runtime at `--t 1`, for clustering plus `write_fastq`:
 
-| corpus | reads | python | Rust port |
-|---|---|---|---|
-| SIRV ONT | 10 000 | 0.19 GB / 4.4 s | **0.04 GB / 0.9 s** |
-| Drosophila ONT | 20 000 | 0.70 GB / 19 s | **0.33 GB / 7.9 s** |
-| SIRV PacBio | 17 633 | 1.05 GB / 24 s | **0.75 GB / 9.9 s** |
-| SIRV ONT, full | 1 300 066 | 3.57 GB / 495 s | **0.76 GB / 76 s** |
+| corpus | reads | python | port v0.1.0 | port v0.2.0 |
+|---|---|---|---|---|
+| SIRV ONT | 10 000 | 0.19 GB / 4.4 s | 0.04 GB / 0.9 s | **0.04 GB / 0.9 s** |
+| Drosophila ONT | 20 000 | 0.70 GB / 19 s | 0.32 GB / 8.6 s | **0.32 GB / 8.0 s** |
+| SIRV PacBio | 17 633 | 1.05 GB / 24 s | 0.73 GB / 10.0 s | **0.73 GB / 9.9 s** |
+| SIRV ONT, full | 1 300 066 | 3.57 GB / 495 s | 3.99 GB / 77 s | **0.73 GB / 74 s** |
+| Drosophila ONT | 1 000 000 | not run | 2.16 GB / 795 s | **1.31 GB / 566 s** |
+
+v0.2.0 changes nothing on the three small corpora and a lot on the two large
+ones. `write_fastq` used to hold every record it wrote, and its peak scaled with
+the size of the biggest cluster: SIRV real full's largest holds 258 386 reads.
+The clustering speedups scale with the number of clusters, of which the small
+corpora have few. Note also that v0.1.0's peak on SIRV real full was *above*
+python's -- that comparison held for clustering alone, not for the whole
+workflow.
 
 Full comparison --- accuracy against gene-level truth, cluster-size
 distributions, and a comparison with
