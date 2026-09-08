@@ -918,6 +918,134 @@ fn scan_for(path: &std::path::Path, acc: &str) -> std::io::Result<Option<fastq::
     Ok(found)
 }
 
+/// One sequential scan of the fastq, writing every cluster as reads arrive.
+///
+/// Valid only when the fastq presents each cluster's reads in the order the
+/// clusters file lists them, which holds for `sorted.fastq` because both are
+/// score-descending with the same tie-break. `Ok(false)` means it did not hold
+/// -- a read arrived out of turn, or a cluster finished short -- and the caller
+/// should use the offset path. Nothing partial is left behind that the offset
+/// path will not truncate.
+///
+/// The rank guard doubles as the collision check: two accessions sharing a hash
+/// put one read in the wrong cluster, which shows up either as an out-of-turn
+/// rank or as a short cluster at the end.
+fn write_sequential(
+    fastq_path: &std::path::Path,
+    outfolder: &str,
+    order: &[String],
+    expected: &[u32],
+    writable: &[bool],
+    plan: &rustc_hash::FxHashMap<u64, (u32, u32)>,
+) -> Result<bool, String> {
+    use std::io::Write;
+
+    let mut writers: Vec<Option<std::io::BufWriter<std::fs::File>>> =
+        (0..order.len()).map(|_| None).collect();
+    for (ci, name) in order.iter().enumerate() {
+        if !writable[ci] {
+            continue;
+        }
+        let path = std::path::Path::new(outfolder).join(format!("{name}.fastq"));
+        match std::fs::File::create(&path) {
+            Ok(f) => writers[ci] = Some(std::io::BufWriter::with_capacity(1 << 16, f)),
+            // Out of descriptors despite the budget: let the caller seek instead.
+            Err(e) if e.kind() == std::io::ErrorKind::Other || e.raw_os_error() == Some(24) => {
+                return Ok(false)
+            }
+            Err(e) => return Err(format!("cannot write {}: {e}", path.display())),
+        }
+    }
+
+    let mut next: Vec<u32> = vec![0; order.len()];
+    let mut out_of_order = false;
+    let mut io_err: Option<String> = None;
+    fastq::for_each_file(fastq_path, |r| {
+        if out_of_order || io_err.is_some() {
+            return;
+        }
+        // `sorted.fastq` names carry the appended score that `final_clusters.tsv`
+        // strips, so try the name as-is first -- which is what the original reads
+        // file has -- and only then the stripped form. `strip_score` cannot be
+        // applied unconditionally: it removes everything after the last `_`, and
+        // real accessions end in things like `_strand=+`.
+        let (key, name) = match plan.get(&hash_acc_for(&r.name)) {
+            Some(v) => (*v, r.name.as_str()),
+            None => {
+                let stripped = strip_score(&r.name);
+                match plan.get(&hash_acc_for(stripped)) {
+                    Some(v) => (*v, stripped),
+                    None => return,
+                }
+            }
+        };
+        let (ci, rank) = key;
+        let ci = ci as usize;
+        if !writable[ci] {
+            return;
+        }
+        if rank != next[ci] {
+            out_of_order = true;
+            return;
+        }
+        let w = writers[ci].as_mut().expect("writable clusters are opened");
+        if let Err(e) = write!(
+            w,
+            "@{}\n{}\n+\n{}\n",
+            name,
+            r.seq,
+            r.qual.unwrap_or_default()
+        ) {
+            io_err = Some(format!("cannot write cluster fastq: {e}"));
+            return;
+        }
+        next[ci] += 1;
+    })
+    .map_err(|e| format!("cannot read {}: {e}", fastq_path.display()))?;
+
+    if let Some(e) = io_err {
+        return Err(e);
+    }
+    if out_of_order {
+        return Ok(false);
+    }
+    // Every cluster must have received exactly what the clusters file promised.
+    for ci in 0..order.len() {
+        if writable[ci] && next[ci] != expected[ci] {
+            return Ok(false);
+        }
+    }
+    for w in writers.iter_mut().flatten() {
+        w.flush()
+            .map_err(|e| format!("cannot write cluster fastq: {e}"))?;
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+mod write_fastq_tests {
+    /// `strip_score` removes everything after the last `_`, so it must not be
+    /// applied to an accession that has no appended score -- real ONT names end
+    /// in things like `_strand=+`. The sequential path relies on trying the raw
+    /// name first for exactly this reason.
+    #[test]
+    fn strip_score_would_mangle_an_unscored_accession() {
+        let scored = "read_45_abc/1_strand=+_779.1486123878182";
+        assert_eq!(crate::strip_score(scored), "read_45_abc/1_strand=+");
+        let unscored = "read_45_abc/1_strand=+";
+        assert_eq!(crate::strip_score(unscored), "read_45_abc/1");
+        assert_ne!(crate::strip_score(unscored), unscored);
+    }
+}
+
+/// The accession hash both paths key on.
+fn hash_acc_for(acc: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    acc.hash(&mut h);
+    h.finish()
+}
+
 fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
     let (clusters_path, fastq_path, outfolder) = match (&wf.clusters, &wf.fastq, &wf.outfolder) {
         (Some(c), Some(f), Some(o)) => (c, f, o),
@@ -944,17 +1072,16 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
     // mismatch, or an accession the index never saw, falls through to a scan of
     // the fastq, which is correct if slow. With 100M reads the chance of any
     // collision at all is about 3e-4.
-    fn hash_acc(acc: &str) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        acc.hash(&mut h);
-        h.finish()
-    }
+    let hash_acc = hash_acc_for;
 
-    // Pass 1: cluster sizes, and the order clusters first appear in. 200 000
-    // clusters is a few megabytes; the accessions are not kept.
-    let mut counts: rustc_hash::FxHashMap<String, u32> = rustc_hash::FxHashMap::default();
+    // Pass 1: for every line, which cluster it belongs to and its rank inside
+    // that cluster, keyed by a hash of the accession. Plus each cluster's name
+    // and size. The accessions themselves are not kept: at 100M reads the
+    // clusters file's strings alone are 11 GB.
+    let mut idx_of: rustc_hash::FxHashMap<String, u32> = rustc_hash::FxHashMap::default();
     let mut order: Vec<String> = Vec::new();
+    let mut expected: Vec<u32> = Vec::new();
+    let mut plan: rustc_hash::FxHashMap<u64, (u32, u32)> = rustc_hash::FxHashMap::default();
     {
         use std::io::BufRead;
         let f = match std::fs::File::open(clusters_path) {
@@ -974,20 +1101,74 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
             };
             // `line.strip().split()` -- any whitespace, and blank lines vanish.
             let mut it = line.split_whitespace();
-            let (cl_id, _acc) = match (it.next(), it.next()) {
+            let (cl_id, acc) = match (it.next(), it.next()) {
                 (Some(a), Some(b)) => (a, b),
                 _ => continue,
             };
-            match counts.get_mut(cl_id) {
-                Some(c) => *c += 1,
+            let ci = match idx_of.get(cl_id) {
+                Some(&i) => i,
                 None => {
+                    let i = u32::try_from(order.len()).expect("fewer than 4G clusters");
                     order.push(cl_id.to_string());
-                    counts.insert(cl_id.to_string(), 1);
+                    expected.push(0);
+                    idx_of.insert(cl_id.to_string(), i);
+                    i
                 }
+            };
+            let rank = expected[ci as usize];
+            expected[ci as usize] += 1;
+            plan.insert(hash_acc(acc), (ci, rank));
+        }
+    }
+    let writable: Vec<bool> = expected.iter().map(|&c| (c as i64) >= wf.n).collect();
+    let n_writable = writable.iter().filter(|w| **w).count();
+
+    if let Err(e) = std::fs::create_dir_all(outfolder) {
+        eprintln!("isONclust: cannot create {outfolder}: {e}");
+        return ExitCode::from(1);
+    }
+
+    // The sequential path, when few enough clusters are being written that every
+    // output file can be held open at once.
+    //
+    // `sorted.fastq` is score-descending, and each cluster's member list in
+    // `final_clusters.tsv` is score-descending with the same tie-break, so a
+    // cluster's reads appear in the fastq in exactly the order the clusters file
+    // lists them -- checked on 178 multi-read clusters, no exceptions. When that
+    // holds, one sequential scan can write every cluster with no seeking and no
+    // byte-offset index, which matters when the fastq is far larger than page
+    // cache: 377 GB at 100M PacBio reads, where the random-access path degrades
+    // to real device I/O.
+    //
+    // It does not always hold: `--fastq` is documented as the *original* reads,
+    // whose order is arbitrary. So the ranks recorded above are used as a guard.
+    // A read arriving out of turn, or a cluster that ends up short, means the
+    // input was not in cluster order -- or that two accessions collided on their
+    // hash -- and the offset path runs instead. Either way the result is exact.
+    const HANDLE_BUDGET: usize = 4096;
+    if n_writable > 0 && n_writable <= HANDLE_BUDGET {
+        match write_sequential(
+            std::path::Path::new(fastq_path),
+            outfolder,
+            &order,
+            &expected,
+            &writable,
+            &plan,
+        ) {
+            Ok(true) => {
+                println!("Wrote clusters to separate fastq files.");
+                return ExitCode::SUCCESS;
+            }
+            Ok(false) => { /* not in cluster order; fall through */ }
+            Err(e) => {
+                eprintln!("isONclust: {e}");
+                return ExitCode::from(1);
             }
         }
     }
-    let _ = &order;
+    // Not needed by the offset path, and holding both indexes at once would
+    // double the footprint.
+    drop(plan);
 
     // Pass 2: index the fastq. The byte ranges come from the parser, not a scan
     // for `@`, because a quality line can begin with `@`.
@@ -1006,11 +1187,6 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    if let Err(e) = std::fs::create_dir_all(outfolder) {
-        eprintln!("isONclust: cannot create {outfolder}: {e}");
-        return ExitCode::from(1);
-    }
-
     // Pass 3: walk the clusters file again and write as we go. Records go
     // straight to the output rather than into a per-cluster String -- the
     // largest cluster on a 1.3M-read corpus holds 258 386 reads, which was
@@ -1018,6 +1194,7 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
     {
         use std::io::BufRead;
         use std::io::Write;
+        let _ = &order;
         let f = match std::fs::File::open(clusters_path) {
             Ok(f) => f,
             Err(e) => {
@@ -1044,7 +1221,10 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
                 (Some(a), Some(b)) => (a, b),
                 _ => continue,
             };
-            if (counts[cl_id] as i64) < wf.n {
+            let Some(&ci) = idx_of.get(cl_id) else {
+                continue;
+            };
+            if !writable[ci as usize] {
                 continue;
             }
             if current.as_ref().map(|(id, _)| id.as_str()) != Some(cl_id) {

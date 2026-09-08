@@ -83,6 +83,21 @@ clusters, 0.08 s for SIRV PacBio's 151, 45 s for droso_1M's 84 318.
 become part of the output. The python implementation behaves the same way. Empty
 the folder between runs.
 
+**Pass `sorted.fastq` rather than the original reads and it avoids seeking.**
+`sorted.fastq`, written into the output folder by the clustering step, is
+score-descending, and so is each cluster's member list, with the same tie-break --
+so one sequential scan can write every cluster. Given the original reads instead,
+whose order is arbitrary, it has to fetch records at scattered offsets, which is
+fast only while the file fits in page cache. On SIRV real full, 579 clusters:
+
+| `--fastq` | peak RSS | time |
+|---|---|---|
+| `sorted.fastq` (sequential) | 0.08 GB | 2.6 s |
+| the original reads (seeking) | 0.12 GB | 10.2 s |
+
+Byte-identical either way. The sequential path needs one open file per cluster,
+so it is used only when that fits -- a few thousand -- and falls back otherwise.
+
 For reference, the port's own figures before the memory work described in
 PORTING.md: SIRV real full 13.46 GB / 371 s, Drosophila 1M 10.99 GB / 1472 s.
 
