@@ -75,7 +75,7 @@ differently on ONT and on PacBio, while the gene-level ordering does not change.
 **The port is 1.9–5.1x faster than the reference on every corpus and thread
 count**, and uses less memory than it on five of the six rows — the exception is
 PacBio at `--t 8`, where the port's resident batches still cost more than the
-reference's eight separate processes (635 MB against 454 MB).
+reference's eight separate processes (599 MB against 454 MB).
 
 ## Full corpora
 
