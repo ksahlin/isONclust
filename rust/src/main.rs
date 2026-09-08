@@ -888,6 +888,7 @@ fn fetch_record(
     index: &rustc_hash::FxHashMap<u64, (u64, u32)>,
     key: u64,
     acc: &str,
+    strip_names: bool,
     raw: &mut Vec<u8>,
 ) -> std::io::Result<Option<fastq::Record>> {
     use std::os::unix::fs::FileExt;
@@ -901,7 +902,15 @@ fn fetch_record(
     // Re-parsed with the same parser that produced the range, so there is no
     // second interpretation of the bytes to get out of step.
     fastq::for_each(text.split_inclusive('\n'), |r| rec = Some(r));
-    Ok(rec.filter(|r| r.name == acc))
+    // Compared in the same form the index was keyed in, or the check would
+    // reject every record from a `sorted.fastq`.
+    Ok(rec.filter(|r| {
+        if strip_names {
+            strip_score(&r.name) == acc
+        } else {
+            r.name == acc
+        }
+    }))
 }
 
 /// Find one record by accession by reading the whole file.
@@ -937,6 +946,7 @@ fn write_sequential(
     expected: &[u32],
     writable: &[bool],
     plan: &rustc_hash::FxHashMap<u64, (u32, u32)>,
+    strip_names: bool,
 ) -> Result<bool, String> {
     use std::io::Write;
 
@@ -964,22 +974,16 @@ fn write_sequential(
         if out_of_order || io_err.is_some() {
             return;
         }
-        // `sorted.fastq` names carry the appended score that `final_clusters.tsv`
-        // strips, so try the name as-is first -- which is what the original reads
-        // file has -- and only then the stripped form. `strip_score` cannot be
-        // applied unconditionally: it removes everything after the last `_`, and
-        // real accessions end in things like `_strand=+`.
-        let (key, name) = match plan.get(&hash_acc_for(&r.name)) {
-            Some(v) => (*v, r.name.as_str()),
-            None => {
-                let stripped = strip_score(&r.name);
-                match plan.get(&hash_acc_for(stripped)) {
-                    Some(v) => (*v, stripped),
-                    None => return,
-                }
-            }
+        // Named in whichever form the caller established; the header written
+        // below must match `final_clusters.tsv`, so it is always the short one.
+        let name = if strip_names {
+            strip_score(&r.name)
+        } else {
+            r.name.as_str()
         };
-        let (ci, rank) = key;
+        let Some(&(ci, rank)) = plan.get(&hash_acc_for(name)) else {
+            return;
+        };
         let ci = ci as usize;
         if !writable[ci] {
             return;
@@ -1020,22 +1024,6 @@ fn write_sequential(
             .map_err(|e| format!("cannot write cluster fastq: {e}"))?;
     }
     Ok(true)
-}
-
-#[cfg(test)]
-mod write_fastq_tests {
-    /// `strip_score` removes everything after the last `_`, so it must not be
-    /// applied to an accession that has no appended score -- real ONT names end
-    /// in things like `_strand=+`. The sequential path relies on trying the raw
-    /// name first for exactly this reason.
-    #[test]
-    fn strip_score_would_mangle_an_unscored_accession() {
-        let scored = "read_45_abc/1_strand=+_779.1486123878182";
-        assert_eq!(crate::strip_score(scored), "read_45_abc/1_strand=+");
-        let unscored = "read_45_abc/1_strand=+";
-        assert_eq!(crate::strip_score(unscored), "read_45_abc/1");
-        assert_ne!(crate::strip_score(unscored), unscored);
-    }
 }
 
 /// The accession hash both paths key on.
@@ -1123,6 +1111,40 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
     let writable: Vec<bool> = expected.iter().map(|&c| (c as i64) >= wf.n).collect();
     let n_writable = writable.iter().filter(|w| **w).count();
 
+    // Which accession form this fastq uses, decided once from its first record.
+    //
+    // The original reads name each read exactly as `final_clusters.tsv` does.
+    // `sorted.fastq`, which the clustering step writes and which is the input
+    // that makes the sequential path below possible, appends the score. Both are
+    // accepted, but the choice has to be made *before* the index is built:
+    // indexing both forms would double it, and getting it wrong makes every
+    // lookup miss. `strip_score` cannot simply be applied always -- it removes
+    // everything after the last `_`, and real accessions end in things like
+    // `_strand=+`.
+    let mut strip_names = false;
+    {
+        let mut first: Option<String> = None;
+        let _ = fastq::for_each_file(std::path::Path::new(fastq_path), |r| {
+            if first.is_none() {
+                first = Some(r.name);
+            }
+        });
+        if let Some(name) = first {
+            if !plan.contains_key(&hash_acc_for(&name))
+                && plan.contains_key(&hash_acc_for(strip_score(&name)))
+            {
+                strip_names = true;
+            }
+        }
+    }
+    let key_of = |name: &str| -> u64 {
+        if strip_names {
+            hash_acc_for(strip_score(name))
+        } else {
+            hash_acc_for(name)
+        }
+    };
+
     if let Err(e) = std::fs::create_dir_all(outfolder) {
         eprintln!("isONclust: cannot create {outfolder}: {e}");
         return ExitCode::from(1);
@@ -1145,7 +1167,19 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
     // A read arriving out of turn, or a cluster that ends up short, means the
     // input was not in cluster order -- or that two accessions collided on their
     // hash -- and the offset path runs instead. Either way the result is exact.
-    const HANDLE_BUDGET: usize = 4096;
+    // Two ceilings, and the descriptor count is the less binding one. Holding
+    // every output open also holds a write buffer per cluster: at droso_1M's
+    // 84 318 clusters that is 5.1 GB of 64 KB buffers, and shrinking them to fit
+    // would trade the write locality this path depends on -- the offset path
+    // writes each cluster's records contiguously, one file at a time, while this
+    // one interleaves across every cluster at once. So the budget is set where
+    // the buffers stay small in total and the interleaving stays modest, and
+    // everything larger takes the offset path. Measured crossover is well above
+    // the corpora that matter here: SIRV real full forms 579 clusters, PacBio
+    // 151.
+    const BUFFER_BYTES: usize = 1 << 16;
+    const BUFFER_BUDGET: usize = 256 << 20;
+    const HANDLE_BUDGET: usize = BUFFER_BUDGET / BUFFER_BYTES; // 4096
     if n_writable > 0 && n_writable <= HANDLE_BUDGET {
         match write_sequential(
             std::path::Path::new(fastq_path),
@@ -1154,6 +1188,7 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
             &expected,
             &writable,
             &plan,
+            strip_names,
         ) {
             Ok(true) => {
                 println!("Wrote clusters to separate fastq files.");
@@ -1174,7 +1209,7 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
     // for `@`, because a quality line can begin with `@`.
     let mut index: rustc_hash::FxHashMap<u64, (u64, u32)> = rustc_hash::FxHashMap::default();
     if let Err(e) = fastq::for_each_file_indexed(std::path::Path::new(fastq_path), |r, at, n| {
-        index.insert(hash_acc(&r.name), (at, n));
+        index.insert(key_of(&r.name), (at, n));
     }) {
         eprintln!("isONclust: cannot read {fastq_path}: {e}");
         return ExitCode::from(1);
@@ -1255,7 +1290,7 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
                 ));
             }
 
-            let rec = match fetch_record(&src, &index, hash_acc(acc), acc, &mut raw) {
+            let rec = match fetch_record(&src, &index, hash_acc(acc), acc, strip_names, &mut raw) {
                 Ok(Some(r)) => r,
                 Ok(None) => match scan_for(std::path::Path::new(fastq_path), acc) {
                     Ok(Some(r)) => r,
@@ -1446,4 +1481,20 @@ fn compare_aligners(args: &cli::Args) -> ExitCode {
         );
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod write_fastq_tests {
+    /// `strip_score` removes everything after the last `_`, so it must not be
+    /// applied to an accession that has no appended score -- real ONT names end
+    /// in things like `_strand=+`. The sequential path relies on trying the raw
+    /// name first for exactly this reason.
+    #[test]
+    fn strip_score_would_mangle_an_unscored_accession() {
+        let scored = "read_45_abc/1_strand=+_779.1486123878182";
+        assert_eq!(crate::strip_score(scored), "read_45_abc/1_strand=+");
+        let unscored = "read_45_abc/1_strand=+";
+        assert_eq!(crate::strip_score(unscored), "read_45_abc/1");
+        assert_ne!(crate::strip_score(unscored), unscored);
+    }
 }

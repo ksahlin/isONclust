@@ -83,20 +83,30 @@ clusters, 0.08 s for SIRV PacBio's 151, 45 s for droso_1M's 84 318.
 become part of the output. The python implementation behaves the same way. Empty
 the folder between runs.
 
-**Pass `sorted.fastq` rather than the original reads and it avoids seeking.**
-`sorted.fastq`, written into the output folder by the clustering step, is
-score-descending, and so is each cluster's member list, with the same tie-break --
-so one sequential scan can write every cluster. Given the original reads instead,
-whose order is arbitrary, it has to fetch records at scattered offsets, which is
-fast only while the file fits in page cache. On SIRV real full, 579 clusters:
+**With few clusters, passing `sorted.fastq` avoids seeking.** That file, written
+into the output folder by the clustering step, is score-descending, and so is each
+cluster's member list, with the same tie-break -- so one sequential scan can write
+every cluster. Given the original reads instead, whose order is arbitrary, records
+have to be fetched at scattered offsets, which is fast only while the file fits in
+page cache.
 
-| `--fastq` | peak RSS | time |
-|---|---|---|
-| `sorted.fastq` (sequential) | 0.08 GB | 2.6 s |
-| the original reads (seeking) | 0.12 GB | 10.2 s |
+| corpus | clusters | `--fastq` | peak RSS | time |
+|---|---|---|---|---|
+| SIRV real full | 579 | `sorted.fastq` | 0.08 GB | **2.6 s** |
+| | | original reads | 0.12 GB | 10.2 s |
+| Drosophila 1M | 84 318 | `sorted.fastq` | 0.13 GB | 47.1 s |
+| | | original reads | 0.13 GB | 46.3 s |
 
-Byte-identical either way. The sequential path needs one open file per cluster,
-so it is used only when that fits -- a few thousand -- and falls back otherwise.
+Byte-identical in every case. **It only helps at low cluster counts**, and
+Drosophila shows why: the sequential path holds one output file open per cluster,
+which at 84 318 clusters is 5.1 GB of write buffers, and it interleaves writes
+across all of them where the seeking path writes each cluster's records
+contiguously. Above a few thousand clusters the seeking path is the better trade,
+so that is what runs -- hence the two Drosophila rows agreeing.
+
+A 100M-read PacBio corpus would form on the order of 3.5 million clusters, so it
+falls on the seeking side, and `write_fastq` there wants fast storage: the fastq
+is ~377 GB, far beyond any page cache.
 
 For reference, the port's own figures before the memory work described in
 PORTING.md: SIRV real full 13.46 GB / 371 s, Drosophila 1M 10.99 GB / 1472 s.
