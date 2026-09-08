@@ -47,7 +47,22 @@ pub struct SweepRead {
     /// because `ReadInfo` is moved between passes in parallel mode.
     /// 2-bit packed; see `packed`. Shared with this read's `ReadInfo`.
     pub seq: crate::packed::PackedSeq,
-    pub qual: std::sync::Arc<[u8]>,
+    /// `compressed_error_rate(seq, qual)`, computed at load.
+    ///
+    /// The quality string itself is **not** kept: it was 716 MB of a 1419 MB
+    /// live heap on SIRV_real_full, half of everything, and `cluster.rs` never
+    /// reads it. Everything the clustering needs from it is these two numbers,
+    /// and the only consumer of the string is the origins writer, which streams
+    /// `sorted.fastq` again for the surviving representatives.
+    ///
+    /// Precomputed but revealed lazily: `reads_to_clusters` copies this into
+    /// `ReadInfo::error_rate` at exactly the point the reference computes it, so
+    /// a read that never reaches that step still reports `nan`. Setting it
+    /// eagerly would change those reads' output.
+    pub hp_error_rate: Option<f64>,
+    /// `expected_errors(qual) / seq.len() as f64`, computed at load. Written as
+    /// that exact expression so the f64 is bit-identical to the reference's.
+    pub err_per_base: f64,
     pub score: f64,
 }
 
@@ -61,7 +76,8 @@ pub struct ReadInfo {
     pub acc: std::sync::Arc<str>,
     /// Shared with the read's `SweepRead`; see the note there.
     pub seq: crate::packed::PackedSeq,
-    pub qual: std::sync::Arc<[u8]>,
+    /// See `SweepRead::err_per_base`.
+    pub err_per_base: f64,
     pub score: f64,
     pub error_rate: Option<f64>,
 }
@@ -125,8 +141,8 @@ impl blockalign::AlignSource for RepSeqs<'_> {
     fn seq_len(&self, id: usize) -> usize {
         self.0[&id].seq.len()
     }
-    fn qual(&self, id: usize) -> &[u8] {
-        &self.0[&id].qual
+    fn err_per_base(&self, id: usize) -> f64 {
+        self.0[&id].err_per_base
     }
     fn acc(&self, id: usize) -> &str {
         &self.0[&id].acc
@@ -338,7 +354,7 @@ pub fn reads_to_clusters(
             batch_index: r.prev_batch_index,
             acc: r.acc.clone(),
             seq: r.seq.clone(),
-            qual: r.qual.clone(),
+            err_per_base: r.err_per_base,
             score: r.score,
             error_rate: None,
         });
@@ -374,7 +390,8 @@ pub fn reads_to_clusters(
                 info.batch_index = new_batch_index;
             } else {
                 info.batch_index = new_batch_index;
-                info.error_rate = timed!(error_rate, compressed_error_rate(&seq_buf, &r.qual));
+                // Computed at load; see `SweepRead::hp_error_rate`.
+                info.error_rate = r.hp_error_rate;
             }
         }
 

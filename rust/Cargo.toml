@@ -4,7 +4,7 @@ name = "isonclust"
 # components and is not valid here. The user-visible string is frozen in
 # src/text.rs as VERSION and is what `--version` prints, so this number is
 # internal only. Do not "fix" --version to read from CARGO_PKG_VERSION.
-version = "0.0.6"
+version = "0.1.0"
 edition = "2021"
 # 1.85, matching the isONcorrect and isONform ports. parasail.rs and align.rs
 # are carried across from isONform verbatim and need at least 1.82

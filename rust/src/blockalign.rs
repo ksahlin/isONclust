@@ -177,8 +177,10 @@ pub trait AlignSource {
     /// allocating per candidate. See `packed`.
     fn seq_into(&self, id: usize, out: &mut Vec<u8>);
     /// The base count, without unpacking.
+    #[allow(dead_code)]
     fn seq_len(&self, id: usize) -> usize;
-    fn qual(&self, id: usize) -> &[u8];
+    /// `expected_errors(qual) / seq_len`, precomputed; see `SweepRead`.
+    fn err_per_base(&self, id: usize) -> f64;
     fn acc(&self, id: usize) -> &str;
 }
 
@@ -222,12 +224,12 @@ pub fn get_best_cluster_block_align(
     let mut seq: Vec<u8> = Vec::new();
     let mut c_seq: Vec<u8> = Vec::new();
     src.seq_into(read_cl_id, &mut seq);
-    let r_qual = src.qual(read_cl_id);
     let top_hits = hits.by_cluster[&top_matches[0]].positions.len();
     // The reference recomputes this inside the candidate loop, once per
     // candidate, from the same unchanging quality string. Hoisting it is
-    // behaviour-neutral -- the value is identical every time.
-    let read_errors = expected_errors(r_qual) / seq.len() as f64;
+    // behaviour-neutral -- the value is identical every time -- and it is now
+    // computed once at load instead, from the same expression.
+    let read_errors = src.err_per_base(read_cl_id);
 
     for cl_id in top_matches {
         let nm_hits = hits.by_cluster[&cl_id].positions.len();
@@ -235,8 +237,7 @@ pub fn get_best_cluster_block_align(
             break;
         }
         src.seq_into(cl_id, &mut c_seq);
-        let error_rate_sum =
-            read_errors + expected_errors(src.qual(cl_id)) / src.seq_len(cl_id) as f64;
+        let error_rate_sum = read_errors + src.err_per_base(cl_id);
         let open = gap_opening_penalty(error_rate_sum);
         let match_id = match_id_tailored(error_rate_sum, k);
         let block = parasail_block_alignment(&seq, &c_seq, k, match_id, open);

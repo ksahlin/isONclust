@@ -30,9 +30,9 @@ never in accuracy. `bench/benchmark.sh` diffs the two clusterings on every run
 and reports a difference as a bug, not a result.
 
 **isONclust3 is a different algorithm with its own paper, not a port.** It is
-expected to produce different clusters. Read the comparison as "which tool for
-which data", not as a scoreboard — and see *Where isONclust3 struggles, and why
-it is probably fixable* below before drawing conclusions from the SIRV rows.
+expected to produce different clusters. Its rows are included because it is the
+other current implementation, not as a like-for-like comparison of the same
+method.
 
 ## The metric
 
@@ -49,27 +49,27 @@ gene of the primary hit.
 | max cluster | the largest cluster, which drives downstream cost |
 
 Transcript-level numbers exist in `PORTING.md` as a **diagnostic**. They are not
-a target and nothing should be tuned to improve them: they pick a different
-winner on ONT than on PacBio, while the gene-level verdict is stable.
+a target and nothing should be tuned to improve them; they rank the tools
+differently on ONT and on PacBio, while the gene-level ordering does not change.
 
 ## Speed and memory
 
 | corpus | preset | tool | `--t` | secs | peak MB | speedup |
 |---|---|---|---|---|---|---|
 | SIRV ONT, 10k | ont | python | 1 | 4.25 | 235 | — |
-| | | **port** | 1 | **0.83** | **44** | **5.1x** |
+| | | **port** | 1 | **0.84** | **39** | **5.1x** |
 | | | python | 8 | 1.33 | 206 | — |
-| | | **port** | 8 | **0.26** | **87** | **5.1x** |
+| | | **port** | 8 | **0.31** | **79** | **4.3x** |
 | | | isONclust3 | — | 0.65 | 32 | |
 | SIRV PacBio, 17.6k | isoseq | python | 1 | 23.64 | 1092 | — |
-| | | **port** | 1 | **9.66** | **779** | **2.4x** |
+| | | **port** | 1 | **9.80** | **746** | **2.4x** |
 | | | python | 8 | 7.06 | 454 | — |
-| | | **port** | 8 | **3.69** | 635 | **1.9x** |
+| | | **port** | 8 | **3.94** | 599 | **1.8x** |
 | | | isONclust3 | — | 1.64 | 119 | |
 | Drosophila ONT, 20k | ont | python | 1 | 16.08 | 704 | — |
-| | | **port** | 1 | **5.70** | **336** | **2.8x** |
+| | | **port** | 1 | **5.83** | **328** | **2.8x** |
 | | | python | 8 | 7.46 | 826 | — |
-| | | **port** | 8 | **2.94** | **539** | **2.5x** |
+| | | **port** | 8 | **3.08** | **524** | **2.4x** |
 | | | isONclust3 | — | 1.62 | 204 | |
 
 **The port is 1.9–5.1x faster than the reference on every corpus and thread
@@ -77,49 +77,35 @@ count**, and uses less memory than it on five of the six rows — the exception 
 PacBio at `--t 8`, where the port's resident batches still cost more than the
 reference's eight separate processes (635 MB against 454 MB).
 
-## At transcriptome scale, where it matters more
+## Full corpora
 
-The rows above are 10k–20k reads, which understates the memory work: on a small
-peak the fixed costs are a large share, while the per-read copies are not. On the
-full corpora, at `--t 1`:
+The rows above are 10k–20k reads. On the full corpora, all single-threaded except
+where `--t 8` is shown:
 
-| corpus | reads | tool | peak | time |
-|---|---|---|---|---|
-| SIRV real, full | 1 300 066 | python | 3.55 GB | 491 s |
-| | | **port** | **1.68 GB** | **71 s** |
-| Drosophila ONT | 1 000 000 | **port** | **2.08 GB** | **722 s** |
-| | | *port before the memory work* | *10.99 GB* | *1472 s* |
+| corpus | reads | clusters | tool | peak RSS | time |
+|---|---|---|---|---|---|
+| SIRV real, full | 1 300 066 | 579 | python | 3.55 GB | 491 s |
+| | | | isONclust3 | 2.49 GB | 243 s |
+| | | | **port `--t 1`** | **0.74 GB** | **73 s** |
+| | | | **port `--t 8`** | **1.34 GB** | **40 s** |
+| Drosophila ONT | 1 000 000 | 84 318 | isONclust3 | 2.98 GB | 233 s |
+| | | | **port `--t 1`** | **1.40 GB** | **726 s** |
+| | | | **port `--t 8`** | **2.95 GB** | **205 s** |
+| SIRV PacBio | 17 633 | 151 | isONclust3 | 0.12 GB | 1.7 s |
+| | | | **port `--t 1`** | **0.75 GB** | **9.8 s** |
+| | | | **port `--t 8`** | **0.60 GB** | **3.9 s** |
 
-**2.1x less memory than the reference and 6.9x faster**, and the port's own
-starting point on this corpus was 13.46 GB and 371 s — so the memory work took it
-to **an eighth of its former footprint while making it 5x faster**. Drosophila at
-1M reads tells the same story more soberly: 10.99 GB and 1472 s down to 2.08 GB
-and 722 s.
+The reference was not run on Drosophila at 1M reads; it needs roughly 40 minutes
+there.
 
-The reference was not run on Drosophila at 1M reads: it needs roughly 40 minutes
-there, and its memory behaviour is already established by the SIRV row.
+For reference, the port's own figures on these corpora before the memory work
+described in PORTING.md: SIRV real full 13.46 GB / 371 s, Drosophila 1M
+10.99 GB / 1472 s.
 
-The speed came with the memory rather than at its expense, and that was not the
-plan: shrinking the representatives table from 1 295 814 entries to 579 turned
-main-memory lookups into cache hits. See PORTING.md, *Memory: profiled, then cut
-by 4x*.
-
-Verified at that scale, not only on the parameter sweep: `final_clusters.tsv`
-(84 MB), `final_cluster_origins.tsv`, `sorted.fastq` (1.87 GB) and `logfile.txt`
-are all byte-for-byte identical to the reference's on 1 300 066 reads.
-
-**Both isONclust versions still use more memory than isONclust3** — 1.6x on
-Drosophila, 1.4x on SIRV ONT and 6.5x on SIRV PacBio at `--t 1`, down from
-2.0–7.2x. The remaining gap on PacBio is quality strings, which the port still
-holds in full; PORTING.md has the analysis and the measured reason packing them
-is the wrong fix.
-
-**One caveat on how these were measured.** Peak RSS on this program drifts with
-position in a measurement session -- the same binary has read 3.70 GB and 4.64 GB
-on identical input. Every figure here is a median of repeated runs, and every
-before/after comparison in PORTING.md interleaves the two binaries rather than
-running one after the other. An unpaired comparison invented a 1 GB regression
-that did not exist.
+`write_fastq`, the subcommand that splits a clustering into per-cluster fastq
+files, is not covered by the rows above and is currently the most memory-hungry
+path: 3.99 GB on SIRV real full at `--N 0`, 3.79 GB at `--N 2`. It holds every
+record it will write. See PORTING.md.
 
 ## Accuracy — gene level
 
@@ -128,7 +114,7 @@ that did not exist.
 | tool | `--t` | clusters | homogeneity | completeness | V | ARI | max cluster |
 |---|---|---|---|---|---|---|---|
 | python / **port** | 1 | 36 | 1.0000 | 0.5729 | 0.7285 | 0.5681 | 3835 |
-| python / **port** | 8 | 30 | 1.0000 | 0.6472 | **0.7858** | **0.7338** | 4595 |
+| python / **port** | 8 | 30 | 1.0000 | 0.6472 | 0.7858 | 0.7338 | 4595 |
 | isONclust3 | — | 66 | 1.0000 | 0.5005 | 0.6671 | 0.3119 | 1776 |
 
 ### SIRV PacBio, 14 783 reads with truth, 7 genes
@@ -136,16 +122,16 @@ that did not exist.
 | tool | `--t` | clusters | homogeneity | completeness | V | ARI | max cluster |
 |---|---|---|---|---|---|---|---|
 | python / **port** | 1 | 151 | 1.0000 | 0.6853 | 0.8132 | 0.7138 | 3327 |
-| python / **port** | 8 | 110 | 1.0000 | 0.6933 | **0.8189** | **0.7259** | 3334 |
-| isONclust3 | — | 163 | **0.6482** | 0.6503 | 0.6492 | 0.3578 | **8237** |
+| python / **port** | 8 | 110 | 1.0000 | 0.6933 | 0.8189 | 0.7259 | 3334 |
+| isONclust3 | — | 163 | 0.6482 | 0.6503 | 0.6492 | 0.3578 | 8237 |
 
 ### Drosophila ONT, 20 000 reads, 3871 genes
 
 | tool | `--t` | clusters | homogeneity | completeness | V | ARI | max cluster |
 |---|---|---|---|---|---|---|---|
 | python / **port** | 1 | 5679 | 0.9932 | 0.9826 | 0.9878 | 0.9285 | 459 |
-| python / **port** | 8 | 5538 | 0.9914 | 0.9882 | **0.9898** | 0.9388 | 488 |
-| isONclust3 | — | 6424 | 0.9937 | 0.9676 | 0.9805 | **0.9563** | 526 |
+| python / **port** | 8 | 5538 | 0.9914 | 0.9882 | 0.9898 | 0.9388 | 488 |
+| isONclust3 | — | 6424 | 0.9937 | 0.9676 | 0.9805 | 0.9563 | 526 |
 
 ### Top 10 cluster sizes
 
@@ -154,60 +140,45 @@ that did not exist.
 | SIRV ONT | isONclust1 `--t 8` | 4595, 944, 641, 567, 512, 423, 381, 329, 267, 209 |
 | | isONclust3 | 1776, 1632, 1067, 655, 644, 489, 449, 423, 330, 329 |
 | SIRV PacBio | isONclust1 `--t 8` | 3334, 3146, 1104, 1085, 1030, 866, 717, 573, 550, 355 |
-| | isONclust3 | **8237**, 1347, 1021, 861, 805, 734, 571, 464, 440, 435 |
+| | isONclust3 | 8237, 1347, 1021, 861, 805, 734, 571, 464, 440, 435 |
 | Drosophila | isONclust1 `--t 8` | 488, 432, 313, 267, 188, 173, 160, 142, 140, 130 |
 | | isONclust3 | 526, 328, 296, 277, 174, 171, 168, 147, 146, 134 |
 
-## Reading it
+## Notes on the tables
 
-**On Drosophila — transcriptome scale, 3871 genes — the two tools are close and
-both are good.** V 0.990 against 0.981, and isONclust3 takes the ARI (0.956
-against 0.939). This is the realistic case: thousands of genes at modest depth,
-where the job is to avoid over-merging. Cluster shapes are similar (max 488
-against 526). On this evidence there is no strong quality argument between them,
-and isONclust3 is about 3x faster again than the port (1.62 s against 5.70 s on
-droso_20k, 225 s against 722 s at 1M reads).
+**`--t 8` scores slightly higher than `--t 1`** on V-measure on all three
+corpora. The `--t > 1` path is a hierarchical batch-and-merge rather than a
+parallelised single pass, so it is a different computation, not the same one on
+more cores. Why it merges differently is not established.
 
-**On SIRV, isONclust1 wins clearly, but SIRV is an unusual clustering problem.**
-Seven genes and 10–18k reads means ~1500–2500 reads per gene, so the task is
-almost entirely *completeness* — merge aggressively into very few, very deep
-clusters. That is the axis isONclust3 does worst on. A 7-class truth is not
-representative of a transcriptome, and the SIRV numbers should not be read as a
-general verdict.
+**isONclust3's homogeneity on SIRV PacBio is 0.6482**, against ≥0.99 on every
+other row measured here, and its largest cluster there is 8237 reads against
+isONclust1's 3327.
 
-**`--t 8` is not just faster than `--t 1` but slightly more accurate**, on all
-three corpora. The `--t > 1` path is a hierarchical batch-and-merge rather than a
-parallelised single pass, and it appears to merge somewhat better. Unexplained,
-and worth understanding rather than relying on.
-
-## Where isONclust3 struggles, and why it is probably fixable
-
-The one clearly bad result is **SIRV PacBio**, where isONclust3's homogeneity
-falls to 0.6482 — its clusters mix genes — and its largest cluster is **8237
-reads against isONclust1's 3327**. Everywhere else its homogeneity is ≥0.99.
-
-That single cluster is expensive downstream. Running isONform over each tool's
-PacBio clusters (`bench/downstream.sh`, isoforms scored against the SIRV
-reference):
+**Downstream isoform reconstruction on the SIRV PacBio clusters.** isONform run
+over each tool's output (`bench/downstream.sh`), isoforms scored against the SIRV
+reference:
 
 | | isoforms | matching | recall | precision | F1 | isONform runtime |
 |---|---|---|---|---|---|---|
-| **isONclust1** | 70 | 35 | **47.1%** | **50.0%** | **0.485** | **386 s** |
-| isONclust3 | 61 | 27 | 38.2% | 44.3% | 0.410 | **2053 s** |
+| isONclust1 | 70 | 35 | 47.1% | 50.0% | 0.485 | 386 s |
+| isONclust3 | 61 | 27 | 38.2% | 44.3% | 0.410 | 2053 s |
 
-isONclust3 saves ~5 seconds of clustering and costs ~1670 seconds of isoform
-reconstruction, because isONform's cost grows steeply with cluster size.
+isONform's cost grows with cluster size, and the runtimes differ by ~1670 s.
 
-**This looks like a fixable gap rather than a fundamental one.** isONclust1's
-homogeneity is a perfect 1.0000 on every SIRV row, and the mechanism is not
-mysterious: when minimizer sharing is ambiguous it falls back to an *alignment*
-before committing two reads to the same cluster, and that alignment is what stops
-distinct genes being merged. isONclust3 has no such step. Adding an alignment
-check — even a cheap one, gated to the cases where a merge would create a large
-or low-identity cluster — would plausibly close most of this, and the parasail
-binding described above shows the cost of exact affine alignment is far lower
-than it is usually assumed to be. **This should be read as a suggestion for
-isONclust3, not as a verdict against it.**
+**Algorithmic difference relevant to the homogeneity numbers.** When minimizer
+sharing is ambiguous, isONclust1 performs an affine alignment before assigning a
+read to a cluster; isONclust3 has no alignment step. The `--features
+parasail-ffi` measurements in this file quantify what that alignment costs:
+392 µs per call at ~2.0 G cells/s, on 0.55–2.6 calls per read.
+
+**Corpus characteristics that bear on the runtime numbers.** SIRV_real_full forms
+579 clusters from 1 300 066 reads; droso_1M forms 84 318 from 1 000 000. The
+isONclust1 sweep compares each read against the representatives built so far, so
+its cost scales with cluster count as well as read count — measured at
+O(n^1.33–1.50) in read count on Drosophila. Read lengths also differ: SIRV maxes
+at 2898 bp, Drosophila at 8339, PacBio at ~9000, and parasail's traceback is
+O(n·m).
 
 ## Reproducing
 

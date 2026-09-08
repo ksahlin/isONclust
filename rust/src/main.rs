@@ -625,12 +625,21 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
         let score = score_of(&r.name);
         let (seq, sub) = packed::PackedSeq::from_bytes(r.seq.as_bytes());
         substituted += sub;
+        // Everything the clustering needs from the quality string, computed here
+        // so the string itself never becomes resident. Both expressions are
+        // written exactly as their consumers wrote them, so the f64s are
+        // bit-identical to what the reference produces. See `SweepRead`.
+        let qual = r.qual.unwrap_or_default();
+        let qual_b = qual.as_bytes();
+        let hp_error_rate = sweep::compressed_error_rate(r.seq.as_bytes(), qual_b);
+        let err_per_base = blockalign::expected_errors(qual_b) / r.seq.len() as f64;
         sweep_reads.push(sweep::SweepRead {
             id: sweep_reads.len(),
             prev_batch_index: 0,
             acc: r.name.into(),
             seq,
-            qual: r.qual.unwrap_or_default().into_bytes().into(),
+            hp_error_rate,
+            err_per_base,
             score,
         });
     }) {
@@ -682,6 +691,7 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
             bt,
             &table,
             params,
+            &sorted_path,
         );
         // The per-iteration files parallel mode writes.
         for (i, (pre, origins)) in r.intermediates.iter().enumerate() {
@@ -752,6 +762,17 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
             .then(a.cmp(b))
     });
 
+    // The representatives' quality strings, which the clustering stage no longer
+    // holds. One sequential pass over sorted.fastq for the survivors only.
+    let want: rustc_hash::FxHashSet<usize> = order.iter().copied().collect();
+    let rep_quals = match quals_for(&sorted_path, &want) {
+        Ok(q) => q,
+        Err(e) => {
+            eprintln!("isONclust: cannot re-read {}: {e}", sorted_path.display());
+            return ExitCode::from(1);
+        }
+    };
+
     let mut clusters_out = String::new();
     let mut origins_out = String::new();
     let mut nontrivial = 0usize;
@@ -762,7 +783,7 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
             output_cl_id,
             strip_score(&rep.acc),
             String::from_utf8_lossy(&rep.seq.to_bytes()),
-            String::from_utf8_lossy(&rep.qual),
+            rep_quals.get(c_id).map(String::as_str).unwrap_or(""),
             pyfloat::repr(rep.score),
             pyfloat::repr(rep.error_rate.unwrap_or(f64::NAN)),
         ));
@@ -834,6 +855,29 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
 /// Accessions in the clusters file have had their score suffix stripped, and are
 /// looked up in the ORIGINAL fastq -- not `sorted.fastq` -- so they match the
 /// input's own read names.
+/// Quality strings for a set of read ids, recovered by streaming `sorted.fastq`.
+///
+/// The clustering stage does not keep quality strings resident -- see
+/// `sweep::SweepRead` -- and the two origins writers are the only things that
+/// need them, for the surviving representatives only: 579 of 1 295 814 on
+/// SIRV_real_full. A read's id is its ordinal in `sorted.fastq`, so one
+/// sequential pass finds them all.
+fn quals_for(
+    sorted_path: &std::path::Path,
+    want: &rustc_hash::FxHashSet<usize>,
+) -> std::io::Result<rustc_hash::FxHashMap<usize, String>> {
+    let mut out: rustc_hash::FxHashMap<usize, String> = rustc_hash::FxHashMap::default();
+    let mut ordinal = 0usize;
+    fastq::for_each_file(sorted_path, |r| {
+        let this = ordinal;
+        ordinal += 1;
+        if want.contains(&this) {
+            out.insert(this, r.qual.unwrap_or_default());
+        }
+    })?;
+    Ok(out)
+}
+
 fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
     let (clusters_path, fastq_path, outfolder) = match (&wf.clusters, &wf.fastq, &wf.outfolder) {
         (Some(c), Some(f), Some(o)) => (c, f, o),
@@ -872,17 +916,28 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
             .push(acc.to_string());
     }
 
-    let ftext = match std::fs::read_to_string(fastq_path) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("isONclust: cannot read {fastq_path}: {e}");
-            return ExitCode::from(1);
+    // Which accessions will actually be written. `--N` drops small clusters, and
+    // on real data most clusters are singletons, so at `--N 2` this is a small
+    // fraction of the file.
+    let needed: rustc_hash::FxHashSet<&str> = order
+        .iter()
+        .filter(|cl_id| members[*cl_id].len() as i64 >= wf.n)
+        .flat_map(|cl_id| members[cl_id].iter().map(String::as_str))
+        .collect();
+
+    // Streamed, and only the needed records are retained. This used to
+    // `read_to_string` the whole input AND then build an owned copy of every
+    // read's sequence and quality -- two full copies of the file, over 4 GB on a
+    // 1.9 GB input, in a subcommand the memory benchmarks never exercised.
+    let mut reads: rustc_hash::FxHashMap<String, (String, String)> =
+        rustc_hash::FxHashMap::default();
+    if let Err(e) = fastq::for_each_file(std::path::Path::new(fastq_path), |r| {
+        if needed.contains(r.name.as_str()) {
+            reads.insert(r.name, (r.seq, r.qual.unwrap_or_default()));
         }
-    };
-    let mut reads: std::collections::HashMap<String, (String, String)> =
-        std::collections::HashMap::new();
-    for r in fastq::read(&ftext) {
-        reads.insert(r.name, (r.seq, r.qual.unwrap_or_default()));
+    }) {
+        eprintln!("isONclust: cannot read {fastq_path}: {e}");
+        return ExitCode::from(1);
     }
 
     if let Err(e) = std::fs::create_dir_all(outfolder) {

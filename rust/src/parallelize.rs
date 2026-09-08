@@ -141,6 +141,10 @@ pub fn parallel_clustering(
     bt: BatchType,
     table: &crate::p_emp::Table,
     p: SweepParams,
+    // `sorted.fastq`, re-read for the representatives' quality strings when an
+    // intermediate is rendered; the clustering stage does not keep them. See
+    // `crate::quals_for`.
+    sorted_path: &std::path::Path,
 ) -> ParallelResult {
     let mut num_batches = nr_cores;
     let mut read_batches = batch_list(read_array, num_batches, bt);
@@ -161,7 +165,7 @@ pub fn parallel_clustering(
                     batch_index: x.prev_batch_index,
                     acc: x.acc.clone(),
                     seq: x.seq.clone(),
-                    qual: x.qual.clone(),
+                    err_per_base: x.err_per_base,
                     score: x.score,
                     error_rate: None,
                 },
@@ -268,7 +272,8 @@ pub fn parallel_clustering(
                 prev_batch_index: r.batch_index,
                 acc: r.acc.clone(),
                 seq: r.seq.clone(),
-                qual: r.qual.clone(),
+                hp_error_rate: r.error_rate,
+                err_per_base: r.err_per_base,
                 score: r.score,
             })
             .collect();
@@ -288,8 +293,12 @@ pub fn parallel_clustering(
             out.representatives = all_reps;
             return out;
         }
-        out.intermediates
-            .push(render_intermediate(&all_clusters, &all_reps, read_array));
+        out.intermediates.push(render_intermediate(
+            &all_clusters,
+            &all_reps,
+            read_array,
+            sorted_path,
+        ));
 
         it += 1;
         let _ = it;
@@ -339,7 +348,11 @@ fn render_intermediate(
     clusters: &OrderedClusters,
     reps: &FxHashMap<usize, ReadInfo>,
     reads: &[SweepRead],
+    sorted_path: &std::path::Path,
 ) -> (String, String) {
+    // Quality strings for this pass's representatives only.
+    let want: rustc_hash::FxHashSet<usize> = reps.keys().copied().collect();
+    let quals = crate::quals_for(sorted_path, &want).unwrap_or_default();
     let mut order: Vec<usize> = clusters.order.clone();
     order.sort_by(|a, b| clusters.map[b].len().cmp(&clusters.map[a].len()));
 
@@ -361,7 +374,7 @@ fn render_intermediate(
             r.id,
             r.acc,
             String::from_utf8_lossy(&r.seq.to_bytes()),
-            String::from_utf8_lossy(&r.qual),
+            quals.get(c_id).map(String::as_str).unwrap_or(""),
             crate::pyfloat::repr(r.score),
             crate::pyfloat::repr(r.error_rate.unwrap_or(f64::NAN)),
         ));
@@ -379,7 +392,8 @@ mod tests {
             prev_batch_index: b,
             acc: format!("r{id}_{score}").into(),
             seq: crate::packed::PackedSeq::from_bytes(&vec![b'A'; len]).0,
-            qual: vec![b'I'; len].into(),
+            hp_error_rate: None,
+            err_per_base: 0.0,
             score,
         }
     }

@@ -1,33 +1,7 @@
-### isONclust has been re-implemented in Rust: 2–7x faster than the Python version on half the memory, with byte-identical output.
+# isONclust - Clustering of long-read transcriptome reads into gene families
 
-The Rust port produces exactly the same clusters as the Python implementation —
-verified byte-for-byte across 27 parameter settings on four corpora, and again on
-a full 1.3M-read corpus where all four output files match the reference's exactly.
+### isONclust has been re-implemented in Rust (2026-09-08) and is 2-7x faster on a fraction of the memory, with byte-identical output ([benchmarks](Port-benchmark.md)).
 
-On the benchmark corpora it runs **1.9–5.1x faster** and uses less memory on five
-of six rows (44 MB against 235 MB on SIRV ONT, 336 MB against 704 MB on
-Drosophila, 779 MB against 1092 MB on SIRV PacBio, all at `--t 1`); the exception
-is PacBio at `--t 8`, where the port's resident batches cost more than the
-reference's separate processes.
-
-At transcriptome scale the gap is wider. On the full 1.3M-read SIRV corpus the
-port uses **1.68 GB against the reference's 3.55 GB and finishes in 71 s against
-491 s** — 2.1x less memory and 6.9x faster. See
-[Port-benchmark.md](Port-benchmark.md) for the full comparison, which also
-measures isONclust against [isONclust3](https://github.com/aljpetri/isONclust3)
-on accuracy, speed and memory.
-
-**On isONclust3.** It is a different algorithm with its own paper, and it is
-faster again. On transcriptome-scale Drosophila data the two are close in quality
-(V-measure 0.990 against 0.981); on the SIRV spike-in isONclust remains
-noticeably more accurate, mostly because isONclust3 merges distinct genes into
-large clusters there. That gap looks addressable rather than fundamental — see
-[Port-benchmark.md](Port-benchmark.md#where-isonclust3-struggles-and-why-it-is-probably-fixable).
-If you are clustering many millions of reads, isONclust3's speed may still
-decide it for you.
-
-isONclust
-===========
 
 
 

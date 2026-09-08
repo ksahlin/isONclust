@@ -630,8 +630,10 @@ engineering summary.
   droso_100k down 27% and SIRV_real_full 4x — see *Memory: profiled, then cut by 4x*.
 * **These corpora are 10k–20k reads and understate both.** At 1M+ reads the port is 2.1x below the
   reference on memory and 6.9x faster; the table above is the floor, not the typical case.
-* **isONclust3 is faster again** — about 3x over the port on Drosophila — at 1.4–6.5x less memory,
-  down from 4–6x. It is a different algorithm.
+* **isONclust3**, single-threaded, on the full corpora: SIRV real full 2.49 GB / 243 s against the
+  port's 1.68 GB / 71 s; Drosophila 1M 2.98 GB / 233 s against 2.08 GB / 753 s; SIRV PacBio
+  0.12 GB / 1.7 s against 0.76 GB / 9.9 s. It is a different algorithm; see
+  [`Port-benchmark.md`](Port-benchmark.md) for the accuracy tables.
 
 ### Where the port's time actually goes
 
@@ -1533,16 +1535,16 @@ Measured at `--t 1`, best of repeated runs on a quiet machine:
 
 | corpus | reads | before | after | |
 | --- | --- | --- | --- | --- |
-| SIRV_real_full | 1 300 066 | **13.46 GB** | **1.68 GB** | −87% |
-| droso_1M | 1 000 000 | 10.99 GB | **2.08 GB** | −81% |
-| droso_100k | 100 000 | 1.41 GB | **0.77 GB** | −45% |
-| sirv_real_10k | 10 000 | 127 MB | **44 MB** | −65% |
+| SIRV_real_full | 1 300 066 | **13.46 GB** | **0.74 GB** | −95% |
+| droso_1M | 1 000 000 | 10.99 GB | **1.40 GB** | −87% |
+| droso_100k | 100 000 | 1.41 GB | **0.70 GB** | −50% |
+| sirv_real_10k | 10 000 | 127 MB | **39 MB** | −69% |
 
 For scale: SIRV_real_full's payload -- sequence plus quality as it sits on disk -- is 1.64 GB, so the
-port went from **8x the payload to roughly 1x**.
+port went from **8x the payload to under half of it**. 18x less memory in total.
 
-**And it got faster, which was not the plan:** SIRV_real_full went from 371 s to 71 s and droso_1M
-from 1472 s to 722 s. Shrinking the representatives table from 1 295 814 entries to 579 turned
+**And it got faster, which was not the plan:** SIRV_real_full went from 371 s to 73 s and droso_1M
+from 1472 s to 726 s. Shrinking the representatives table from 1 295 814 entries to 579 turned
 main-memory lookups into cache hits, and the packed minimizer keys with `rustc-hash` took droso_100k's
 runtime down 27% on their own. A 5x speedup out of memory work is the kind of result that is usually a
 bug, so the output was re-verified byte-for-byte against the reference at 1.3M reads afterwards rather
@@ -1612,6 +1614,18 @@ Each was gated on `bench/equivalence.sh verify` (27/27) before the next.
    (+10 s on a 280 s run). Both passes read sequentially and only the output is placed out of order --
    sorting offsets and *reading* at random would have risked cold-disk seeks instead.
 
+10. **Release the quality strings.** `cluster.rs` never reads `qual`. Everything the clustering needs
+    from it is two numbers -- `compressed_error_rate(seq, qual)` and
+    `expected_errors(qual) / seq.len() as f64` -- both computed at load, both written as exactly the
+    expressions their consumers used so the `f64`s are bit-identical. The string itself is recovered
+    by streaming `sorted.fastq` for the surviving representatives (579 of 1 295 814 on
+    SIRV_real_full) when the origins files are written. **1.685 -> 0.734 GB on SIRV_real_full**, no
+    runtime cost.
+
+    The precomputed compressed error rate is **revealed lazily**: `reads_to_clusters` copies it into
+    `ReadInfo::error_rate` at exactly the point the reference computes it, so a read that never
+    reaches that step still reports `nan`. Setting it eagerly would change those reads' output.
+
 #### The one deliberate divergence
 
 **Change 6 breaks byte-identity on non-ACGT input.** Two bits cannot hold a fifth symbol, so `N`,
@@ -1651,11 +1665,20 @@ to three digits across interleaved pairs.
 
 #### What is left, and what is not worth doing
 
-- **The heap-to-RSS gap is still the largest single term and is not explained.** 2.66 GB on
-  SIRV_real_full, 0.85 GB on droso_100k. It scales with read count rather than read length, which
-  argues against any single large parasail traceback and for allocator retention proportional to
-  allocation churn. `get_all_hits` allocating a fresh `Hits` map per read -- 1.3M times -- is the
-  obvious suspect and has not been tested.
+- **`write_fastq` is now the most memory-hungry path in the tool**: 3.99 GB on SIRV_real_full at
+  `--N 0`, 3.79 GB at `--N 2`, against the clustering stage's 0.74 GB. It streams the input rather
+  than slurping it and keeps only the records it will write, which took it from 5.58 GB, but the
+  retained records are still a full copy. Removing them needs byte offsets from the parser so each
+  cluster's records can be fetched on demand. Note that `--N` barely helps on SIRV_real_full -- 579
+  clusters over 1.3M reads means almost every read is in a cluster large enough to be written -- and
+  would help much more on Drosophila, where 84 318 clusters average twelve reads.
+- **The heap-to-RSS gap is parasail's C allocations. Measured, not inferred.** Building the same
+  instrumented binary both ways on droso_100k gives *identical* live heap -- 0.157 GB to the megabyte
+  -- and RSS of 0.755 GB with parasail's C library against 0.381 GB with the port's own aligner. A
+  374 MB difference that the Rust heap profiler cannot see, because parasail `malloc`s its own
+  matrices. This retires an earlier hypothesis in this file that blamed allocation churn: churn is
+  *higher* in the pure-Rust build (107.6M allocations against 94.0M) and its RSS is half. The dial
+  costs 6x on runtime, and both ends are exact.
 - **The C aligner costs 542 MB of peak RSS** for its 13-16x speed (1121 MB against 579 MB with
   `--no-default-features`, on droso_100k). The mechanism is not established: parasail's traceback is
   two bytes per cell against the port's one, which accounts for only ~52 MB of it.
