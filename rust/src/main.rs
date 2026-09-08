@@ -878,6 +878,46 @@ fn quals_for(
     Ok(out)
 }
 
+/// Read the record the index points at, and confirm it is the one asked for.
+///
+/// `Ok(None)` means the index had no entry, or the entry pointed at a different
+/// read -- a hash collision. Either way the caller falls back to a scan. The
+/// check is free: the record has to be parsed anyway to be re-emitted.
+fn fetch_record(
+    src: &std::fs::File,
+    index: &rustc_hash::FxHashMap<u64, (u64, u32)>,
+    key: u64,
+    acc: &str,
+    raw: &mut Vec<u8>,
+) -> std::io::Result<Option<fastq::Record>> {
+    use std::os::unix::fs::FileExt;
+    let Some(&(at, n)) = index.get(&key) else {
+        return Ok(None);
+    };
+    raw.resize(n as usize, 0);
+    src.read_exact_at(raw, at)?;
+    let text = String::from_utf8_lossy(raw);
+    let mut rec = None;
+    // Re-parsed with the same parser that produced the range, so there is no
+    // second interpretation of the bytes to get out of step.
+    fastq::for_each(text.split_inclusive('\n'), |r| rec = Some(r));
+    Ok(rec.filter(|r| r.name == acc))
+}
+
+/// Find one record by accession by reading the whole file.
+///
+/// Only reached on a 64-bit hash collision, which for 100M reads has about a
+/// 3e-4 chance of happening at all. Correct rather than fast.
+fn scan_for(path: &std::path::Path, acc: &str) -> std::io::Result<Option<fastq::Record>> {
+    let mut found = None;
+    fastq::for_each_file(path, |r| {
+        if found.is_none() && r.name == acc {
+            found = Some(r);
+        }
+    })?;
+    Ok(found)
+}
+
 fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
     let (clusters_path, fastq_path, outfolder) = match (&wf.clusters, &wf.fastq, &wf.outfolder) {
         (Some(c), Some(f), Some(o)) => (c, f, o),
@@ -890,53 +930,70 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
         }
     };
 
-    let ctext = match std::fs::read_to_string(clusters_path) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("isONclust: cannot read {clusters_path}: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    let mut order: Vec<String> = Vec::new();
-    let mut members: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    for line in ctext.lines() {
-        // `line.strip().split()` -- any whitespace, and blank lines vanish.
-        let mut it = line.split_whitespace();
-        let (cl_id, acc) = match (it.next(), it.next()) {
-            (Some(a), Some(b)) => (a, b),
-            _ => continue,
-        };
-        members
-            .entry(cl_id.to_string())
-            .or_insert_with(|| {
-                order.push(cl_id.to_string());
-                Vec::new()
-            })
-            .push(acc.to_string());
+    // Three streaming passes, and nothing per-read is held except a hash.
+    //
+    // The join here is between the clusters file, which names reads by
+    // accession, and the fastq, which stores them in a different order, so
+    // *something* has to map accession to record. Holding the accessions is what
+    // this used to do and it does not scale: at 100M reads the clusters file's
+    // strings plus a string-keyed index come to about 27 GB. Keying by a 64-bit
+    // hash of the accession instead is 2.2 GB at that size.
+    //
+    // The hash makes this approximate, so it is checked: the record is parsed on
+    // read-back anyway, and its name is compared with the accession asked for. A
+    // mismatch, or an accession the index never saw, falls through to a scan of
+    // the fastq, which is correct if slow. With 100M reads the chance of any
+    // collision at all is about 3e-4.
+    fn hash_acc(acc: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        acc.hash(&mut h);
+        h.finish()
     }
 
-    // Which accessions will actually be written. `--N` drops small clusters.
-    let needed: rustc_hash::FxHashSet<&str> = order
-        .iter()
-        .filter(|cl_id| members[*cl_id].len() as i64 >= wf.n)
-        .flat_map(|cl_id| members[cl_id].iter().map(String::as_str))
-        .collect();
-
-    // An index, not the reads. This used to hold every read's sequence and
-    // quality as owned Strings -- 3.99 GB on a 1.87 GB input, five times the
-    // clustering stage -- because the clusters file names reads by accession, so
-    // they cannot be emitted in input order. Instead each needed accession maps
-    // to the byte range of its record, and the record is read back when its
-    // cluster is written: ~100 bytes per read instead of ~1.4 KB.
-    //
-    // The ranges come from the parser rather than a scan for `@`, because a
-    // quality line can begin with `@`; see `fastq::for_each_indexed`.
-    let mut index: rustc_hash::FxHashMap<String, (u64, u32)> = rustc_hash::FxHashMap::default();
-    if let Err(e) = fastq::for_each_file_indexed(std::path::Path::new(fastq_path), |r, at, n| {
-        if needed.contains(r.name.as_str()) {
-            index.insert(r.name, (at, n));
+    // Pass 1: cluster sizes, and the order clusters first appear in. 200 000
+    // clusters is a few megabytes; the accessions are not kept.
+    let mut counts: rustc_hash::FxHashMap<String, u32> = rustc_hash::FxHashMap::default();
+    let mut order: Vec<String> = Vec::new();
+    {
+        use std::io::BufRead;
+        let f = match std::fs::File::open(clusters_path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("isONclust: cannot read {clusters_path}: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        for line in std::io::BufReader::with_capacity(1 << 20, f).lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("isONclust: cannot read {clusters_path}: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            // `line.strip().split()` -- any whitespace, and blank lines vanish.
+            let mut it = line.split_whitespace();
+            let (cl_id, _acc) = match (it.next(), it.next()) {
+                (Some(a), Some(b)) => (a, b),
+                _ => continue,
+            };
+            match counts.get_mut(cl_id) {
+                Some(c) => *c += 1,
+                None => {
+                    order.push(cl_id.to_string());
+                    counts.insert(cl_id.to_string(), 1);
+                }
+            }
         }
+    }
+    let _ = &order;
+
+    // Pass 2: index the fastq. The byte ranges come from the parser, not a scan
+    // for `@`, because a quality line can begin with `@`.
+    let mut index: rustc_hash::FxHashMap<u64, (u64, u32)> = rustc_hash::FxHashMap::default();
+    if let Err(e) = fastq::for_each_file_indexed(std::path::Path::new(fastq_path), |r, at, n| {
+        index.insert(hash_acc(&r.name), (at, n));
     }) {
         eprintln!("isONclust: cannot read {fastq_path}: {e}");
         return ExitCode::from(1);
@@ -949,51 +1006,113 @@ fn write_fastq(wf: &cli::WriteFastqArgs) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-
     if let Err(e) = std::fs::create_dir_all(outfolder) {
         eprintln!("isONclust: cannot create {outfolder}: {e}");
         return ExitCode::from(1);
     }
-    for cl_id in &order {
-        let accs = &members[cl_id];
-        if (accs.len() as i64) < wf.n {
-            continue;
-        }
-        let mut body = String::new();
-        let mut raw = Vec::new();
-        for acc in accs {
-            let Some(&(at, n)) = index.get(acc) else {
-                // The reference raises KeyError here.
-                eprintln!("isONclust: read {acc:?} is in {clusters_path} but not in {fastq_path}");
-                return ExitCode::from(1);
-            };
-            // Read just this record and re-parse it with the same parser that
-            // produced the range, so there is no second interpretation of the
-            // bytes to get out of step.
-            raw.resize(n as usize, 0);
-            use std::os::unix::fs::FileExt;
-            if let Err(e) = src.read_exact_at(&mut raw, at) {
-                eprintln!("isONclust: cannot read {fastq_path}: {e}");
+
+    // Pass 3: walk the clusters file again and write as we go. Records go
+    // straight to the output rather than into a per-cluster String -- the
+    // largest cluster on a 1.3M-read corpus holds 258 386 reads, which was
+    // 172 MB of buffer.
+    {
+        use std::io::BufRead;
+        use std::io::Write;
+        let f = match std::fs::File::open(clusters_path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("isONclust: cannot read {clusters_path}: {e}");
                 return ExitCode::from(1);
             }
-            let text = String::from_utf8_lossy(&raw);
-            let mut rec = None;
-            fastq::for_each(text.split_inclusive('\n'), |r| rec = Some(r));
-            let Some(r) = rec else {
-                eprintln!("isONclust: read {acc:?} could not be re-read from {fastq_path}");
-                return ExitCode::from(1);
+        };
+        // Which cluster files have been opened, so a clusters file that does not
+        // group its lines appends instead of truncating.
+        let mut opened: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+        let mut current: Option<(String, std::io::BufWriter<std::fs::File>)> = None;
+        let mut raw: Vec<u8> = Vec::new();
+
+        for line in std::io::BufReader::with_capacity(1 << 20, f).lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("isONclust: cannot read {clusters_path}: {e}");
+                    return ExitCode::from(1);
+                }
             };
-            body.push_str(&format!(
+            let mut it = line.split_whitespace();
+            let (cl_id, acc) = match (it.next(), it.next()) {
+                (Some(a), Some(b)) => (a, b),
+                _ => continue,
+            };
+            if (counts[cl_id] as i64) < wf.n {
+                continue;
+            }
+            if current.as_ref().map(|(id, _)| id.as_str()) != Some(cl_id) {
+                if let Some((_, mut w)) = current.take() {
+                    if let Err(e) = w.flush() {
+                        eprintln!("isONclust: cannot write cluster fastq: {e}");
+                        return ExitCode::from(1);
+                    }
+                }
+                let path = std::path::Path::new(outfolder).join(format!("{cl_id}.fastq"));
+                let append = !opened.insert(cl_id.to_string());
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .append(append)
+                    .truncate(!append)
+                    .open(&path);
+                let file = match file {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("isONclust: cannot write {}: {e}", path.display());
+                        return ExitCode::from(1);
+                    }
+                };
+                current = Some((
+                    cl_id.to_string(),
+                    std::io::BufWriter::with_capacity(1 << 20, file),
+                ));
+            }
+
+            let rec = match fetch_record(&src, &index, hash_acc(acc), acc, &mut raw) {
+                Ok(Some(r)) => r,
+                Ok(None) => match scan_for(std::path::Path::new(fastq_path), acc) {
+                    Ok(Some(r)) => r,
+                    Ok(None) => {
+                        // The reference raises KeyError here.
+                        eprintln!(
+                            "isONclust: read {acc:?} is in {clusters_path} but not in {fastq_path}"
+                        );
+                        return ExitCode::from(1);
+                    }
+                    Err(e) => {
+                        eprintln!("isONclust: cannot read {fastq_path}: {e}");
+                        return ExitCode::from(1);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("isONclust: cannot read {fastq_path}: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            let (_, w) = current.as_mut().expect("a writer is open");
+            if let Err(e) = write!(
+                w,
                 "@{}\n{}\n+\n{}\n",
                 acc,
-                r.seq,
-                r.qual.unwrap_or_default()
-            ));
+                rec.seq,
+                rec.qual.unwrap_or_default()
+            ) {
+                eprintln!("isONclust: cannot write cluster fastq: {e}");
+                return ExitCode::from(1);
+            }
         }
-        let path = std::path::Path::new(outfolder).join(format!("{cl_id}.fastq"));
-        if let Err(e) = std::fs::write(&path, body) {
-            eprintln!("isONclust: cannot write {}: {e}", path.display());
-            return ExitCode::from(1);
+        if let Some((_, mut w)) = current.take() {
+            if let Err(e) = w.flush() {
+                eprintln!("isONclust: cannot write cluster fastq: {e}");
+                return ExitCode::from(1);
+            }
         }
     }
     println!("Wrote clusters to separate fastq files.");

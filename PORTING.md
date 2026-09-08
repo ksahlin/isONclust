@@ -1665,13 +1665,22 @@ to three digits across interleaved pairs.
 
 #### What is left, and what is not worth doing
 
-- **`write_fastq` is now the most memory-hungry path in the tool**: 3.99 GB on SIRV_real_full at
-  `--N 0`, 3.79 GB at `--N 2`, against the clustering stage's 0.74 GB. It streams the input rather
-  than slurping it and keeps only the records it will write, which took it from 5.58 GB, but the
-  retained records are still a full copy. Removing them needs byte offsets from the parser so each
-  cluster's records can be fetched on demand. Note that `--N` barely helps on SIRV_real_full -- 579
-  clusters over 1.3M reads means almost every read is in a cluster large enough to be written -- and
-  would help much more on Drosophila, where 84 318 clusters average twelve reads.
+- **`write_fastq` streams, and holds one hash per read.** It was 5.58 GB on a 1.87 GB input --
+  `read_to_string` of the whole file plus an owned copy of every read's sequence and quality -- and
+  is now **0.103 GB**, 54x less and slightly faster. Three passes: the clusters file for cluster
+  sizes, the fastq for a `FxHashMap<u64, (offset, len)>` keyed by a hash of the accession, then the
+  clusters file again writing records straight out as they are read.
+
+  The design was chosen for scale rather than for this corpus. A string-keyed index does not scale:
+  at 100M reads the clusters file's accessions plus duplicated index keys plus the table come to
+  ~27 GB, against ~2.2 GB for the hash key. Records also no longer accumulate in a per-cluster
+  `String` -- the largest cluster on a 1.3M-read corpus holds 258 386 reads, 172 MB of buffer.
+
+  The hash makes the lookup approximate, so it is **checked**: the record is parsed on read-back
+  anyway, so comparing its name against the accession asked for is free, and a mismatch or a missing
+  entry falls through to a full scan. At 100M reads the chance of any collision at all is ~3e-4, so
+  the scan is effectively never reached and the result is exact rather than probabilistic. Verified
+  by diffing all 178 output files against the previous implementation.
 - **The heap-to-RSS gap is parasail's C allocations. Measured, not inferred.** Building the same
   instrumented binary both ways on droso_100k gives *identical* live heap -- 0.157 GB to the megabyte
   -- and RSS of 0.755 GB with parasail's C library against 0.381 GB with the port's own aligner. A
