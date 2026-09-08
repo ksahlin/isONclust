@@ -144,6 +144,28 @@ pub struct Hits {
     /// Insertion-ordered, mirroring the reference's `defaultdict`.
     pub order: Vec<usize>,
     pub by_cluster: FxHashMap<usize, HitList>,
+    /// `HitList`s taken out by `reset`, kept so their `Vec`s can be filled again
+    /// instead of reallocated.
+    ///
+    /// A fresh `Hits` per read cost two `Vec` allocations for every distinct
+    /// cluster the read touched, plus the map's own table -- 940 allocations per
+    /// read on droso_100k, all freed again immediately. Recycling makes the
+    /// steady state allocation-free. The pool holds at most as many `HitList`s
+    /// as the busiest read touched clusters, not one per cluster in the corpus,
+    /// so it stays small.
+    pool: Vec<HitList>,
+}
+
+impl Hits {
+    /// Empty this for the next read, keeping the allocations.
+    pub fn reset(&mut self) {
+        for (_, mut hl) in self.by_cluster.drain() {
+            hl.indices.clear();
+            hl.positions.clear();
+            self.pool.push(hl);
+        }
+        self.order.clear();
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -166,17 +188,26 @@ pub fn get_all_hits(
     minimizers: &[(&[u8], usize)],
     db: &MinimizerDatabase,
     read_cl_id: usize,
-) -> Hits {
-    let mut hits = Hits::default();
+    hits: &mut Hits,
+) {
+    hits.reset();
+    // Destructured so the three fields can be borrowed independently: the
+    // `or_insert_with` closure needs `order` and `pool` while `by_cluster` is
+    // borrowed mutably.
+    let Hits {
+        order,
+        by_cluster,
+        pool,
+    } = hits;
     for (i, (m, pos)) in minimizers.iter().enumerate() {
         if let Some(cluster_ids) = db.get(m) {
             for &id in cluster_ids {
                 // The database stores u32 ids to halve its value storage; the
                 // hit lists and everything downstream stay usize.
                 let cl_id = id as usize;
-                let entry = hits.by_cluster.entry(cl_id).or_insert_with(|| {
-                    hits.order.push(cl_id);
-                    HitList::default()
+                let entry = by_cluster.entry(cl_id).or_insert_with(|| {
+                    order.push(cl_id);
+                    pool.pop().unwrap_or_default()
                 });
                 entry.indices.push(i);
                 entry.positions.push(*pos);
@@ -184,10 +215,12 @@ pub fn get_all_hits(
         }
     }
     // The read's own cluster is removed after collection, not skipped during it.
-    if hits.by_cluster.remove(&read_cl_id).is_some() {
-        hits.order.retain(|c| *c != read_cl_id);
+    if let Some(mut hl) = by_cluster.remove(&read_cl_id) {
+        order.retain(|c| *c != read_cl_id);
+        hl.indices.clear();
+        hl.positions.clear();
+        pool.push(hl);
     }
-    hits
 }
 
 /// The outcome of the mapping attempt: `(best_cluster_id, nr_shared, ratio)`,
@@ -430,6 +463,37 @@ mod tests {
         )
     }
 
+    /// Reuse must leave no trace of the previous read. A recycled `HitList`
+    /// whose vectors were not cleared would silently graft one read's hits onto
+    /// the next, and the harness would not necessarily catch it.
+    #[test]
+    fn a_reused_hits_carries_nothing_over() {
+        let mut db = MinimizerDatabase::new();
+        db.add(b"AAA", 1);
+        db.add(b"CCC", 2);
+        let mut h = Hits::default();
+
+        let first: Vec<(&[u8], usize)> = vec![(b"AAA", 5), (b"CCC", 9)];
+        get_all_hits(&first, &db, 99, &mut h);
+        assert_eq!(h.order, vec![1, 2]);
+        assert_eq!(h.by_cluster[&1].positions, vec![5]);
+        assert_eq!(h.by_cluster[&2].positions, vec![9]);
+
+        // A second read touching only one of them must not see the other, and
+        // the shared cluster must not keep the earlier position.
+        let second: Vec<(&[u8], usize)> = vec![(b"CCC", 11)];
+        get_all_hits(&second, &db, 99, &mut h);
+        assert_eq!(h.order, vec![2]);
+        assert_eq!(h.by_cluster.len(), 1);
+        assert_eq!(h.by_cluster[&2].positions, vec![11]);
+        assert_eq!(h.by_cluster[&2].indices, vec![0]);
+
+        // And a read that hits nothing leaves it empty.
+        get_all_hits(&[], &db, 99, &mut h);
+        assert!(h.is_empty());
+        assert!(h.by_cluster.is_empty());
+    }
+
     #[test]
     fn the_database_deduplicates_like_a_python_set() {
         let mut db = MinimizerDatabase::new();
@@ -452,7 +516,8 @@ mod tests {
             (b"GGG".as_slice(), 5),
             (b"CCC".as_slice(), 10),
         ];
-        let h = get_all_hits(&ms, &db, 42);
+        let mut h = Hits::default();
+        get_all_hits(&ms, &db, 42, &mut h);
         assert_eq!(
             h.order,
             vec![7, 9],
@@ -483,7 +548,8 @@ mod tests {
         let mut db = MinimizerDatabase::new();
         db.add(b"AAA", 1);
         let ms: Vec<(&[u8], usize)> = vec![(b"AAA".as_slice(), 0)];
-        let h = get_all_hits(&ms, &db, 99);
+        let mut h = Hits::default();
+        get_all_hits(&ms, &db, 99, &mut h);
         let r = reps(&[(1, "a_1.0", 0.05), (99, "b_2.0", 0.05)]);
         let t = crate::p_emp::Table::select(13, 20).unwrap();
         let out = get_best_cluster(99, 100, &h, 1, &r, &t, 5, 0.8, 0.1, 0.7);
@@ -497,7 +563,8 @@ mod tests {
     #[test]
     fn no_hits_at_all_returns_the_initial_state() {
         let db = MinimizerDatabase::new();
-        let h = get_all_hits(&[], &db, 1);
+        let mut h = Hits::default();
+        get_all_hits(&[], &db, 1, &mut h);
         let r = reps(&[(1, "a_1.0", 0.05)]);
         let t = crate::p_emp::Table::select(13, 20).unwrap();
         let out = get_best_cluster(1, 100, &h, 0, &r, &t, 5, 0.8, 0.1, 0.7);
@@ -524,7 +591,8 @@ mod tests {
             .enumerate()
             .map(|(i, k)| (k.as_slice(), i * 16))
             .collect();
-        let h = get_all_hits(&ms, &db, 99);
+        let mut h = Hits::default();
+        get_all_hits(&ms, &db, 99, &mut h);
         let r = reps(&[(1, "a_1.0", 0.05), (99, "b_2.0", 0.05)]);
         let t = crate::p_emp::Table::select(13, 20).unwrap();
         let out = get_best_cluster(99, 100, &h, 6, &r, &t, 5, 0.8, 0.1, 0.7);

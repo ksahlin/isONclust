@@ -312,6 +312,8 @@ pub fn reads_to_clusters(
     let mut merged: std::collections::HashSet<usize> = std::collections::HashSet::new();
     // One unpacking buffer for the whole sweep; see `packed`.
     let mut seq_buf: Vec<u8> = Vec::new();
+    // One hit collector for the whole sweep, reset per read; see `cluster::Hits`.
+    let mut hits_buf = cluster::Hits::default();
     let mut out_mapped = 0usize;
     let mut out_aln_passed = 0usize;
     let mut out_aln_called = 0usize;
@@ -396,7 +398,10 @@ pub fn reads_to_clusters(
         }
 
         // 3. hits
-        let hits = timed!(hits, cluster::get_all_hits(&ms, &db, read_cl_id));
+        timed!(
+            hits,
+            cluster::get_all_hits(&ms, &db, read_cl_id, &mut hits_buf)
+        );
 
         // 4. map
         let m = timed!(
@@ -404,7 +409,7 @@ pub fn reads_to_clusters(
             cluster::get_best_cluster(
                 read_cl_id,
                 hpol.len(),
-                &hits,
+                &hits_buf,
                 ms.len(),
                 &RepMap(&reps),
                 table,
@@ -425,7 +430,7 @@ pub fn reads_to_clusters(
                 alignment,
                 blockalign::get_best_cluster_block_align(
                     read_cl_id,
-                    &hits,
+                    &hits_buf,
                     &RepSeqs(&reps),
                     p.k,
                     p.aligned_threshold,
