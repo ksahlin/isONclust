@@ -47,6 +47,14 @@ libparasail-sys = { version = "0.2", optional = true }
 # does iterate a map into a vector (`parallelize`'s survivors) sorts it by
 # (score, id), which is total.
 rustc-hash = "2.1.3"
+# Posting lists in the minimizer database, which are overwhelmingly tiny: on
+# 100k Drosophila reads 65.9% of the 2.1M keys hold exactly ONE representative
+# id and 97.6% hold four or fewer, yet each was a `Vec<u32>` with its own heap
+# block -- 2.1M allocations, none smaller than malloc's 16-byte minimum, for a
+# median of 4 bytes of payload. `SmallVec<[u32; 2]>` is the same 24 bytes as
+# `Vec<u32>`, so the hash table does not grow by a byte and 87.1% of those
+# blocks simply stop existing. See `cluster::Postings` for why two and not four.
+smallvec = "1.15"
 # Two candidate replacements for the exact scalar parasail port, which is 15x
 # slower than the C library and is what makes this port slower than the
 # reference on ONT data. Both are carried across from isONform with their

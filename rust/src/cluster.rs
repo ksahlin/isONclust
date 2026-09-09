@@ -75,10 +75,30 @@ pub trait Representatives {
 pub struct MinimizerDatabase {
     /// Packed k-mer -> representative ids. `u32` ids: these are indices into the
     /// sorted read array, so they cannot reach 2^32.
-    map: FxHashMap<u64, Vec<u32>>,
+    ///
+    /// The lists are tiny and there are millions of them -- see `Postings`.
+    map: FxHashMap<u64, Postings>,
     /// The exact fallback for k-mers that do not pack. Normally empty.
-    wide: FxHashMap<Vec<u8>, Vec<u32>>,
+    wide: FxHashMap<Vec<u8>, Postings>,
 }
+
+/// The representative ids for one minimizer.
+///
+/// Measured on 100k Drosophila reads, `--t 8`, at the first merge iteration
+/// (which is where peak RSS is made): 2 117 416 keys holding 3 362 042 postings
+/// between them, so 1.59 each. 65.9% of keys hold exactly one and 97.6% hold
+/// four or fewer. As `Vec<u32>` that was one heap block per key -- 2.1M of them,
+/// each rounded up to malloc's 16-byte minimum for what is usually 4 bytes of
+/// payload, and with `Vec`'s doubling the total requested capacity ran 2.6x the
+/// postings actually stored.
+///
+/// The inline capacity is **two**, not four, and the reason is the table rather
+/// than the lists. `SmallVec<[u32; 2]>` is 24 bytes -- exactly what `Vec<u32>`
+/// was -- while `[u32; 4]` measures 32, and there are around 4M table slots in
+/// iteration 1: going inline-4 would add 8 bytes to every one of them (+32 MB)
+/// to save the 222k keys of length 3 and 4 their blocks (3.6 MB). Two covers
+/// 87.1% of keys and costs nothing. The rest spill to the heap as before.
+type Postings = smallvec::SmallVec<[u32; 2]>;
 
 /// 2-bit pack a k-mer, or `None` if it contains a non-ACGT byte or is too long.
 ///
@@ -401,6 +421,59 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 64);
+    }
+
+    /// The whole point of `Postings` is that the hash table does not grow: the
+    /// table is millions of slots and dwarfs the posting lists themselves, so an
+    /// inline capacity that pushed the value past `Vec<u32>`'s 24 bytes would
+    /// cost more table than it saved in heap blocks. `[u32; 4]` does exactly
+    /// that -- it measures 32 -- which is why the inline capacity is two. A
+    /// future change to it has to keep this true, hence an assertion and not a
+    /// comment.
+    #[test]
+    fn postings_are_no_larger_than_the_vec_they_replaced() {
+        assert_eq!(
+            std::mem::size_of::<Postings>(),
+            std::mem::size_of::<Vec<u32>>()
+        );
+    }
+
+    /// The 12.9% of keys that outgrow the inline array must behave exactly as
+    /// they did, including across the spill boundary itself.
+    #[test]
+    fn a_key_past_the_inline_capacity_keeps_every_id() {
+        let mut db = MinimizerDatabase::new();
+        for id in 0..40usize {
+            db.add(b"ACGT", id);
+        }
+        let got = db.get(b"ACGT").expect("present");
+        assert_eq!(got.len(), 40);
+        assert!(got.iter().copied().eq(0u32..40));
+
+        // The exact fallback spills too, and the two maps stay separate.
+        for id in 0..40usize {
+            db.add(b"ACGN", id + 100);
+        }
+        assert_eq!(db.get(b"ACGN").expect("present").len(), 40);
+        assert_eq!(db.get(b"ACGT").expect("present").len(), 40);
+        assert_eq!(db.len(), 2);
+    }
+
+    /// De-duplication is a linear scan over the list, so it has to keep working
+    /// once the list is on the heap.
+    #[test]
+    fn duplicate_ids_are_rejected_on_both_sides_of_the_spill() {
+        let mut db = MinimizerDatabase::new();
+        for _ in 0..3 {
+            for id in 0..3usize {
+                db.add(b"ACGT", id);
+            }
+        }
+        assert_eq!(db.get(b"ACGT").expect("present"), &[0u32, 1, 2][..]);
+        for id in 0..10usize {
+            db.add(b"ACGT", id);
+        }
+        assert_eq!(db.get(b"ACGT").expect("present").len(), 10);
     }
 
     /// `1 + 2k` bits must fit in a u64. Every k the tool can run is 4..=30, so
