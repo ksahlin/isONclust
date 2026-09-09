@@ -1,5 +1,9 @@
 # isONclust - Clustering of long-read transcriptome reads into gene families
 
+**Doing de novo transcriptome reconstruction?** isONclust, isONcorrect and isONform are one
+workflow — [isONpipe](https://github.com/ksahlin/isONpipe) installs all three and runs them
+with one command.
+
 ### isONclust has been re-implemented in Rust (2026-09-08) and produces identical output 2-7x faster on a fraction of the memory (see below).
 
 isONclust clusters PacBio Iso-Seq or Oxford Nanopore reads so that each cluster
