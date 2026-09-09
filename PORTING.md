@@ -1866,10 +1866,15 @@ not making the alignment faster.
   port's memory, larger than every structure the Rust side owns put together. The mechanism is only
   partly established: parasail's traceback is two bytes per cell against the port's one, which
   accounts for ~52 MB of it.
-- **Releasing the last quality copy** is worth ~865 MB on SIRV_real_full and is the largest remaining
-  in-heap item. `qual` is never read in `cluster.rs`: it scores reads during the sort, yields one
-  `f64` per read via `compressed_error_rate`, and is otherwise needed only to write a representative's
-  own record out -- which a second pass over `sorted.fastq` would supply.
+- **The last quality copy is already gone** -- this bullet proposed it and change 10 did it. Neither
+  `SweepRead` nor `ReadInfo` holds a quality string; both keep the two `f64`s computed from it at
+  load. What remains is representatives-only: the final origins writer slurps the survivors' quality
+  strings via `quals_for`, and builds both output files as `String`s before writing them. Measured
+  rather than estimated, droso_100k `--t 8` with 18 750 clusters -- the whole output phase runs
+  between **0.212 and 0.258 GB against a 1.110 GB peak**, so 12 MB of quality and 29 MB of output
+  text with 4x headroom. Cluster count grows as n^0.81 and the clustering peak as n^0.74, so the gap
+  closes slowly if at all. `record_ranges_for` (change 11) would remove it in a few lines, and it is
+  **not worth doing** unless a measurement shows the output phase setting the peak.
 - **Packing quality is the wrong lever.** Measured alphabets: 48 distinct characters on SIRV ONT, 65
   on Drosophila ONT, 1 on SIRV PacBio CCS. Real ONT needs 6-7 bits, so packing buys 12-25% against
   100% for releasing it.
