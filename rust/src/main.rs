@@ -692,20 +692,14 @@ fn run_pipeline(args: &cli::Args, outfolder: &str) -> ExitCode {
             &table,
             params,
             &sorted_path,
+            std::path::Path::new(outfolder),
         );
-        // The per-iteration files parallel mode writes.
-        for (i, (pre, origins)) in r.intermediates.iter().enumerate() {
-            let dir = std::path::Path::new(outfolder).join((i + 1).to_string());
-            if let Err(e) = std::fs::create_dir_all(&dir) {
-                eprintln!("isONclust: cannot create {}: {e}", dir.display());
-                return ExitCode::from(1);
-            }
-            if let Err(e) = std::fs::write(dir.join("pre_clusters.csv"), pre)
-                .and_then(|_| std::fs::write(dir.join("cluster_origins.csv"), origins))
-            {
-                eprintln!("isONclust: cannot write intermediates: {e}");
-                return ExitCode::from(1);
-            }
+        // The per-iteration files are written as each iteration finishes, so
+        // that only the failure has to travel back here. They used to be
+        // rendered into strings and kept until the whole clustering was done.
+        if let Some(msg) = &r.intermediate_error {
+            eprintln!("{msg}");
+            return ExitCode::from(1);
         }
         (
             r.clusters,
@@ -876,6 +870,53 @@ fn quals_for(
         }
     })?;
     Ok(out)
+}
+
+/// Where each wanted record *is* in `sorted.fastq`, rather than what it says.
+///
+/// `quals_for` above returns the quality STRINGS, all of them resident at once
+/// -- about 1.4 KB per representative on Drosophila reads. A caller that needs
+/// each string exactly once, in an order the file does not have, can keep 12
+/// bytes per representative instead and re-read the record when it gets there:
+/// the file was just written, so every one of those reads is a page-cache hit.
+/// `parallelize::write_intermediate` is that caller.
+///
+/// Read ids are ordinals in `sorted.fastq`, which is what makes this work; the
+/// ranges come from the parser's own state machine and not from scanning for
+/// `@`, because a quality line may begin with one. See `fastq::for_each_indexed`.
+fn record_ranges_for(
+    sorted_path: &std::path::Path,
+    want: &rustc_hash::FxHashSet<usize>,
+) -> std::io::Result<rustc_hash::FxHashMap<usize, (u64, u32)>> {
+    let mut out: rustc_hash::FxHashMap<usize, (u64, u32)> = rustc_hash::FxHashMap::default();
+    out.reserve(want.len());
+    let mut ordinal = 0usize;
+    fastq::for_each_file_indexed(sorted_path, |_r, at, n| {
+        let this = ordinal;
+        ordinal += 1;
+        if want.contains(&this) {
+            out.insert(this, (at, n));
+        }
+    })?;
+    Ok(out)
+}
+
+/// The quality string of the record at a known byte range, into a reused buffer.
+fn qual_at(
+    src: &std::fs::File,
+    at: u64,
+    n: u32,
+    raw: &mut Vec<u8>,
+) -> std::io::Result<Option<String>> {
+    use std::os::unix::fs::FileExt;
+    raw.resize(n as usize, 0);
+    src.read_exact_at(raw, at)?;
+    let text = String::from_utf8_lossy(raw);
+    let mut qual = None;
+    // Re-parsed with the parser that produced the range, so the bytes get one
+    // interpretation and not two.
+    fastq::for_each(text.split_inclusive('\n'), |r| qual = Some(r.qual.unwrap_or_default()));
+    Ok(qual)
 }
 
 /// Read the record the index points at, and confirm it is the one asked for.

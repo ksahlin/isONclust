@@ -122,8 +122,16 @@ impl OrderedClusters {
     pub fn is_empty(&self) -> bool {
         self.order.is_empty()
     }
-    pub fn iter(&self) -> impl Iterator<Item = (usize, &Vec<u32>)> {
-        self.order.iter().map(move |i| (*i, &self.map[i]))
+    /// The clusters in `order`, by value, leaving nothing behind.
+    ///
+    /// For the merge in `parallelize`, which used to `clone()` every member list
+    /// while the source map was still alive -- two full copies of every cluster
+    /// at the moment of peak liveness, for data that was about to be dropped.
+    pub fn into_ordered(self) -> impl Iterator<Item = (usize, Vec<u32>)> {
+        let OrderedClusters { order, mut map } = self;
+        order
+            .into_iter()
+            .filter_map(move |i| map.remove(&i).map(|v| (i, v)))
     }
 }
 

@@ -122,8 +122,12 @@ pub fn batch_list_merge_consecutive(reads: &[SweepRead]) -> Vec<Vec<SweepRead>> 
 pub struct ParallelResult {
     pub clusters: OrderedClusters,
     pub representatives: FxHashMap<usize, ReadInfo>,
-    /// One entry per merge iteration, in order: `(pre_clusters, cluster_origins)`.
-    pub intermediates: Vec<(String, String)>,
+    /// The first failure while writing a merge iteration's two files, already
+    /// formatted for stderr. The files are written as each iteration finishes
+    /// rather than collected and handed back, so this is how the failure gets
+    /// out; the caller reports it and exits non-zero, as it did when the writing
+    /// lived there.
+    pub intermediate_error: Option<String>,
     pub mapped_passed: usize,
     pub aln_passed: usize,
     pub aln_called: usize,
@@ -142,9 +146,13 @@ pub fn parallel_clustering(
     table: &crate::p_emp::Table,
     p: SweepParams,
     // `sorted.fastq`, re-read for the representatives' quality strings when an
-    // intermediate is rendered; the clustering stage does not keep them. See
-    // `crate::quals_for`.
+    // intermediate is written; the clustering stage does not keep them. See
+    // `crate::record_ranges_for`.
     sorted_path: &std::path::Path,
+    // Where the numbered per-iteration directories go. The writing used to
+    // happen in the caller, after this function returned, which meant every
+    // iteration's two files stayed resident until then.
+    outfolder: &std::path::Path,
 ) -> ParallelResult {
     let mut num_batches = nr_cores;
     let mut read_batches = batch_list(read_array, num_batches, bt);
@@ -179,7 +187,7 @@ pub fn parallel_clustering(
     let mut out = ParallelResult {
         clusters: OrderedClusters::default(),
         representatives: FxHashMap::default(),
-        intermediates: Vec::new(),
+        intermediate_error: None,
         mapped_passed: 0,
         aln_passed: 0,
         aln_called: 0,
@@ -257,8 +265,11 @@ pub fn parallel_clustering(
         let mut all_reps: FxHashMap<usize, ReadInfo> = FxHashMap::default();
         let mut dbs: HashMap<i64, crate::cluster::MinimizerDatabase> = HashMap::new();
         for res in results {
-            for (id, accs) in res.clusters.iter() {
-                all_clusters.insert(id, accs.clone());
+            // `into_ordered`, not `iter()` + `clone()`: the batches are disjoint
+            // by read id and `res` is dead after this, so there is no reason for
+            // both copies of every member list to be live at once.
+            for (id, members) in res.clusters.into_ordered() {
+                all_clusters.insert(id, members);
             }
             all_reps.extend(res.representatives);
             dbs.insert(res.batch_index, res.db);
@@ -293,15 +304,23 @@ pub fn parallel_clustering(
             out.representatives = all_reps;
             return out;
         }
-        out.intermediates.push(render_intermediate(
-            &all_clusters,
-            &all_reps,
-            read_array,
-            sorted_path,
-        ));
+        // Written now, not collected: `it` is the directory number, and the
+        // first failure is carried out in `intermediate_error` for the caller to
+        // report. A later iteration is still attempted, which is what happened
+        // when the caller did all the writing after the fact.
+        if out.intermediate_error.is_none() {
+            if let Err(e) = write_intermediate(
+                &outfolder.join(it.to_string()),
+                &all_clusters,
+                &all_reps,
+                read_array,
+                sorted_path,
+            ) {
+                out.intermediate_error = Some(e);
+            }
+        }
 
         it += 1;
-        let _ = it;
         read_batches = batch_list_merge_consecutive(&survivors);
         num_batches = read_batches.len();
         if num_batches == 0 {
@@ -344,42 +363,91 @@ pub fn parallel_clustering(
 /// `pre_clusters.csv` uses the **internal** cluster id, not a renumbered one, and
 /// `cluster_origins.csv` writes the accession **with** its score suffix -- unlike
 /// `final_cluster_origins.tsv`, which strips it.
-fn render_intermediate(
+///
+/// Streamed, and that is the whole point of it. This used to render both files
+/// into `String`s which `parallel_clustering` then held until it returned: on
+/// 100k Drosophila reads with `--t 8` that is 137 MB resident for the entire
+/// run, growing with reads x read length, and every byte of it was already
+/// destined for a file. The representatives' quality strings are no longer
+/// slurped either -- each is needed exactly once, so a 12-byte byte range
+/// replaces a ~1.4 KB string. Both files are byte-for-byte what they were; all
+/// six `--t > 1` equivalence cases pin them.
+///
+/// An IO failure reading `sorted.fastq` back leaves the quality column empty
+/// rather than failing the run, which is what the slurping version did with its
+/// `unwrap_or_default`. Preserved deliberately: this is a diagnostic file, and
+/// the clustering itself is unaffected.
+fn write_intermediate(
+    dir: &std::path::Path,
     clusters: &OrderedClusters,
     reps: &FxHashMap<usize, ReadInfo>,
     reads: &[SweepRead],
     sorted_path: &std::path::Path,
-) -> (String, String) {
-    // Quality strings for this pass's representatives only.
-    let want: rustc_hash::FxHashSet<usize> = reps.keys().copied().collect();
-    let quals = crate::quals_for(sorted_path, &want).unwrap_or_default();
+) -> Result<(), String> {
+    use std::io::Write;
+    // The two messages are the caller's former ones, unchanged.
+    let wr = |e: std::io::Error| format!("isONclust: cannot write intermediates: {e}");
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("isONclust: cannot create {}: {e}", dir.display()))?;
+
     let mut order: Vec<usize> = clusters.order.clone();
     order.sort_by(|a, b| clusters.map[b].len().cmp(&clusters.map[a].len()));
 
-    let mut pre = String::new();
-    let mut origins = String::new();
+    let mut w = std::io::BufWriter::with_capacity(
+        1 << 16,
+        std::fs::File::create(dir.join("pre_clusters.csv")).map_err(wr)?,
+    );
     for c_id in &order {
         for id in &clusters.map[c_id] {
-            pre.push_str(&format!(
-                "{}\t{}\n",
+            writeln!(
+                w,
+                "{}\t{}",
                 c_id,
                 crate::strip_score(&reads[*id as usize].acc)
-            ));
+            )
+            .map_err(wr)?;
         }
     }
+    // BufWriter swallows the error from its own drop, so the flush is explicit.
+    w.flush().map_err(wr)?;
+
+    // Byte ranges for this pass's representatives, and one file handle to read
+    // them back through. `sorted.fastq` was written by this process, so these
+    // are page-cache hits.
+    let want: rustc_hash::FxHashSet<usize> = reps.keys().copied().collect();
+    let ranges = crate::record_ranges_for(sorted_path, &want).unwrap_or_default();
+    let src = std::fs::File::open(sorted_path).ok();
+
+    let mut w = std::io::BufWriter::with_capacity(
+        1 << 16,
+        std::fs::File::create(dir.join("cluster_origins.csv")).map_err(wr)?,
+    );
+    let mut seq = Vec::new();
+    let mut raw = Vec::new();
     for c_id in &order {
         let r = &reps[c_id];
-        origins.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\n",
+        r.seq.unpack_into(&mut seq);
+        let qual = match (&src, ranges.get(c_id)) {
+            (Some(f), Some(&(at, n))) => crate::qual_at(f, at, n, &mut raw)
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        writeln!(
+            w,
+            "{}\t{}\t{}\t{}\t{}\t{}",
             r.id,
             r.acc,
-            String::from_utf8_lossy(&r.seq.to_bytes()),
-            quals.get(c_id).map(String::as_str).unwrap_or(""),
+            String::from_utf8_lossy(&seq),
+            qual,
             crate::pyfloat::repr(r.score),
             crate::pyfloat::repr(r.error_rate.unwrap_or(f64::NAN)),
-        ));
+        )
+        .map_err(wr)?;
     }
-    (pre, origins)
+    w.flush().map_err(wr)?;
+    Ok(())
 }
 
 #[cfg(test)]
