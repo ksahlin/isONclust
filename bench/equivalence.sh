@@ -67,6 +67,10 @@ CORPUS="$(resolve_corpus "${CORPUS:-smoke}")"
 GOLDEN="${GOLDEN:-$ROOT/bench/golden}"
 WORK="${WORK:-$(mktemp -d)}"
 
+# NOT the equivalence comparison -- `record` hashes every file a run writes,
+# found with `find`, so the numbered intermediate dirs are pinned too. This is
+# only the floor for `seeds`: the list of files that must EXIST, so five runs
+# that all crashed cannot agree with each other vacuously.
 OUT_FILES=(final_clusters.tsv final_cluster_origins.tsv sorted.fastq logfile.txt)
 
 PASS=0; FAIL=0
@@ -108,19 +112,52 @@ PY
 
 cmd_seeds() {
   echo "==> determinism: does the reference agree with itself across PYTHONHASHSEED?"
-  local seeds=(0 1 2 7 12345) s d first
+  local seeds=(0 1 2 7 12345) s d first tag
   for entry_args in "--isoseq --t 1" "--isoseq --t 8"; do
-    first=""
+    tag="$(echo "$entry_args" | tr -dc 'a-z0-9')"
     for s in "${seeds[@]}"; do
-      d="$WORK/seeds_${s}_$(echo "$entry_args" | tr -dc 'a-z0-9')"
+      d="$WORK/seeds_${s}_$tag"
       rm -rf "$d"; mkdir -p "$d"
       PYTHONHASHSEED="$s" "$REF_PYTHON" isONclust $entry_args \
         --fastq "$CORPUS" --outfolder "$d" >"$d.stdout" 2>"$d.stderr" || true
     done
+
+    # The file list is DISCOVERED from the runs rather than taken from
+    # OUT_FILES. The --t 8 entry also writes <n>/pre_clusters.csv and
+    # <n>/cluster_origins.csv, one dir per merge iteration, and the fixed list
+    # quietly left both out. Those two are pinned byte-for-byte by
+    # `record`/`verify`, which hashes whatever a run wrote -- but a golden
+    # recorded at seed 0 only means something once seed independence is
+    # established, and that is this gate's whole job.
+    local listing="" got f setdiffers=0
+    for s in "${seeds[@]}"; do
+      d="$WORK/seeds_${s}_$tag"
+      got="$(cd "$d" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | tr '\n' ' ')"
+      if [[ -z "$listing" && "$s" == "${seeds[0]}" ]]; then
+        listing="$got"
+      elif [[ "$got" != "$listing" ]]; then
+        # A seed-dependent iteration COUNT would otherwise read as agreement on
+        # whichever files happen to exist under both seeds.
+        bad "SEED-DEPENDENT FILE SET: [$entry_args]"
+        info "  seed ${seeds[0]}: $listing"
+        info "  seed $s: $got"
+        setdiffers=1
+      fi
+    done
+    [[ $setdiffers -eq 0 ]] && \
+      ok "same file set across ${#seeds[@]} seeds: $(wc -w <<<"$listing" | tr -d ' ') files  [$entry_args]"
+
+    # OUT_FILES is the floor, and it is why this stays here. Five runs that all
+    # crashed leave five empty directories, and every file then agrees with
+    # every other vacuously -- a green determinism gate on no data at all.
     for f in "${OUT_FILES[@]}"; do
+      [[ " $listing " == *" $f "* ]] || bad "reference wrote no $f  [$entry_args]"
+    done
+
+    for f in $listing; do
       first=""; local differs=0
       for s in "${seeds[@]}"; do
-        d="$WORK/seeds_${s}_$(echo "$entry_args" | tr -dc 'a-z0-9')"
+        d="$WORK/seeds_${s}_$tag"
         [[ -f "$d/$f" ]] || continue
         local h; h="$(shasum -a 256 "$d/$f" | cut -d' ' -f1)"
         [[ -z "$first" ]] && first="$h" && continue
@@ -132,10 +169,10 @@ cmd_seeds() {
         bad "SEED-DEPENDENT: $f  [$entry_args]"
         # Say where, not just that. This is the actionable half.
         local a b
-        a="$WORK/seeds_0_$(echo "$entry_args" | tr -dc 'a-z0-9')/$f"
-        b="$WORK/seeds_1_$(echo "$entry_args" | tr -dc 'a-z0-9')/$f"
+        a="$WORK/seeds_0_$tag/$f"
+        b="$WORK/seeds_1_$tag/$f"
         info "  seed 0 vs seed 1:"
-        "$REF_PYTHON" bench/diffsummary.py "$a" "$b" "$f" 2>/dev/null || true
+        "$REF_PYTHON" bench/diffsummary.py "$a" "$b" "$(basename "$f")" 2>/dev/null || true
       fi
     done
   done
