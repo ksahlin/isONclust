@@ -357,6 +357,14 @@ and parsed back out downstream, so it is an output and an input at once.
 `logfile.txt` is included because it is the only place the error-rate distribution is observable, and
 `error_rate` is precisely where the reference's determinism defect surfaces.
 
+Both `record` and `seeds` **discover** that list with `find` rather than holding their own copy of it.
+`seeds` did hold its own, and so never checked the two parallel-mode files for seed independence even
+though one of its entries is `--isoseq --t 8` -- files that `record` was pinning byte-for-byte all
+along, against a golden taken at one seed. It compares the file *set* across seeds first, since a
+seed-dependent iteration count would otherwise read as agreement on whichever files exist under both,
+and keeps the four top-level names as a floor so that five runs which all crashed cannot agree
+vacuously. 16 checks, and the intermediates are stable.
+
 **The goldens are a manifest of hashes, not the files.** Recorded verbatim the 27 cases come to
 318 MB, which has no business in a repository this exercise just took from 492 MB to 1 MB. Hashes are
 enough to *fail* correctly; they cannot say *what* moved, so on a mismatch `verify` re-runs the
@@ -1713,6 +1721,21 @@ Each was gated on `bench/equivalence.sh verify` (27/27) before the next.
     `ReadInfo::error_rate` at exactly the point the reference computes it, so a read that never
     reaches that step still reports `nan`. Setting it eagerly would change those reads' output.
 
+11. **Stream the per-iteration intermediates.** `parallel_clustering` rendered each merge iteration's
+    `pre_clusters.csv` and `cluster_origins.csv` into `String`s and returned them all, for the caller
+    to write after the whole clustering had finished -- 137 MB held for the rest of the run on
+    droso_100k `--t 8`, growing with reads x read length. They now stream through a `BufWriter` as
+    each iteration completes. The quality strings they need went the same way: each is used exactly
+    once, so `record_ranges_for` keeps a 12-byte byte range per representative instead of a ~1.4 KB
+    string. **This did not move peak RSS**; see the trap below.
+12. **Inline the minimizer database's posting lists.** 2 117 416 keys hold 3 362 042 representative
+    ids between them at droso_100k's first merge iteration -- 65.9% of keys hold exactly one, 87.1%
+    two or fewer -- and each was a `Vec<u32>` with its own heap block, none smaller than malloc's
+    16-byte minimum. `SmallVec<[u32; 2]>` puts them in the table slot. **Inline two, not four:**
+    `[u32; 2]` is 24 bytes, exactly what `Vec<u32>` was, while `[u32; 4]` is 32, and inline-4 would
+    add 8 bytes to each of ~4M table slots (+32 MB) to save 222k keys their blocks (3.6 MB). A test
+    asserts the size equality. **1.137 -> 1.105 GB at `--t 8`**, no runtime change.
+
 #### The one deliberate divergence
 
 **Change 6 breaks byte-identity on non-ACGT input.** Two bits cannot hold a fifth symbol, so `N`,
@@ -1746,9 +1769,56 @@ conclusion before being caught:
 - **Live heap and RSS are different questions.** Only 283 MB of a 1050 MB RSS went through Rust's
   allocator at one point, because parasail's C library `malloc`s its own matrices. A heap profiler
   cannot see them, and a `time -l` figure cannot separate them.
+- **Resident is not the same as live at the peak.** Change 11 removed 137 MB that was held for most
+  of a droso_100k `--t 8` run and moved peak RSS by 11 MB, because the peak is made inside the *first*
+  merge iteration and no intermediate exists until that iteration finishes. A structure can be large,
+  long-lived and completely irrelevant to peak RSS. **Find the peak first** -- an `eprintln!` of
+  `ps -o rss=` at each phase boundary costs nothing and would have said so before the work, not
+  after.
 
 A real effect looks like the sort-stage measurement above: 2.111/2.110 against 0.074/0.073, agreeing
 to three digits across interleaved pairs.
+
+#### Where `--t 8`'s extra memory goes
+
+`--t 8` is the default and costs more than `--t 1`: 1.105 GB against 0.689 GB on droso_100k. Three
+measurements, in the order that made the previous two attributions in this file wrong.
+
+**The peak is made in the first merge iteration**, printing RSS at each phase boundary: 0.084 GB
+before iteration 1 spawns, **1.132 GB when its workers join**, then 0.991 and 0.998 GB for iterations
+2 and 3. Later iterations cluster only survivors, and RSS never returns to the pre-peak level because
+the per-thread allocator arenas do not give pages back.
+
+**Concurrency is a modest part of it.** Same 8 batches every time -- so the same answer, verified
+byte-identical at every cap -- varying only how many run at once:
+
+| batches in flight | peak | wall |
+| --- | --- | --- |
+| `--t 1` (one batch) | 0.690 GB | 40.2 s |
+| 1 of 8 | 0.990 GB | 38.3 s |
+| 2 of 8 | 1.023 GB | 27.7 s |
+| 4 of 8 | 1.032 GB | 23.1 s |
+| 8 of 8 | 1.158 GB | 21.3 s |
+
+Capping at 4 buys 11% of peak for 8% of runtime. It needs no CLI change -- batch count and thread
+count are separable, and only the batch count reaches the answer -- but it trades away what `--t 8`
+is for, so it is **not** implemented.
+
+**The databases are not the bulk either**, which is what change 12 was aimed at. Probed directly at
+iteration 1: the 8 tables are **107.2 MB**, and the 12.9% of lists still on the heap after change 12
+are ~6 MB. About 10% of the peak.
+
+**53% of it is parasail.** The same binary, `--no-default-features`, on the same corpus, producing
+the identical clustering -- only the aligner differs:
+
+| aligner | peak | wall |
+| --- | --- | --- |
+| parasail C | **1.116 GB** | 20.0 s |
+| the port's own | **0.530 GB** | 158.1 s |
+
+`--t 8` pays for eight concurrent traceback matrices where `--t 1` pays for one. The `--t 8` memory
+question is the aligner question, and the lever is the last bullet below -- bounding the traceback,
+not making the alignment faster.
 
 #### What is left, and what is not worth doing
 
@@ -1791,9 +1861,11 @@ to three digits across interleaved pairs.
   matrices. This retires an earlier hypothesis in this file that blamed allocation churn: churn is
   *higher* in the pure-Rust build (107.6M allocations against 94.0M) and its RSS is half. The dial
   costs 6x on runtime, and both ends are exact.
-- **The C aligner costs 542 MB of peak RSS** for its 13-16x speed (1121 MB against 579 MB with
-  `--no-default-features`, on droso_100k). The mechanism is not established: parasail's traceback is
-  two bytes per cell against the port's one, which accounts for only ~52 MB of it.
+- **The C aligner costs 542-586 MB of peak RSS** for its 13-16x speed -- 1121 against 579 MB at
+  `--t 1`, and 1116 against 530 MB at `--t 8`, on droso_100k. It is the single largest item in the
+  port's memory, larger than every structure the Rust side owns put together. The mechanism is only
+  partly established: parasail's traceback is two bytes per cell against the port's one, which
+  accounts for ~52 MB of it.
 - **Releasing the last quality copy** is worth ~865 MB on SIRV_real_full and is the largest remaining
   in-heap item. `qual` is never read in `cluster.rs`: it scores reads during the sort, yields one
   `f64` per read via `compressed_error_rate`, and is otherwise needed only to write a representative's
