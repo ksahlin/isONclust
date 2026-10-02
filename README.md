@@ -29,8 +29,8 @@ port is checked against; see [INSTALL-python.md](INSTALL-python.md).
 
 ### Rust-port versions
 
-The port is a drop-in replacement: same command line, same flags, same output
-files, **byte for byte**.
+The port is a drop-in replacement: same command line, options, and output
+files. Output is byte-identical to the Python version. 
 
 One divergence: sequences are 2-bit packed, so a non-ACGT base will be converted
 to `A` (a warning is emitted if it sees any).
